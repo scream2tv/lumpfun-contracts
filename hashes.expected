@@ -205,7 +205,27 @@
 #         `mint_rejects_a_nonzero_platform_fee_bps`, and the revenue defence moves
 #         wholly to `mint_rejects_zeroed_platform_fee_flat`.
 #     Still 321 checks, 0 errors, 0 warnings.
-lump_pool.lump_pool_v3.spend  e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e
+#   b8a5c48146a104e1f20796aa63582d0eef3e79243388be40ed3f00d3  ██ v3.2 — THE LP-FEE
+#     COHORT, 2026-07-27. ██ Operator decision: AMM trades retain a 0.30% LP fee
+#     in the pool reserves (params_v3.amm_lp_fee_bps_v3 = 30), Uniswap-V2 style:
+#     `amm_quote_buy` / `amm_quote_sell_gross` now price the NET input and floor
+#     the amount OUT (pool-favouring), while the datum deltas keep the FULL input
+#     entering the reserve — so the 0.30% accrues in the input-side asset and k
+#     STRICTLY GROWS on every AMM trade. There are no LP tokens and no withdraw
+#     redeemer, so the fee is permanent liquidity deepening, not income to anyone.
+#     Bootstrap quotes are UNTOUCHED — a retained curve-side fee would open the
+#     AMM +0.106% ABOVE the curve close and break the zero-gap calibration.
+#     Platform fee stays 2 ADA flat, creator 1% (operator decision 2026-07-27);
+#     both still paid as outputs on the FULL ada_in / gross.
+#     The suite was RE-DERIVED, not patched: every AMM exact-integer vector moved,
+#     `amm_buy_k_is_non_increasing` INVERTED to `amm_buy_k_strictly_increases`,
+#     the round-trip "leak" became the pool's take, the whole-float locked floor
+#     became a >= bound (it RISES with volume now), and the micro-buy edge flipped
+#     (1 lovelace bought 1 token before; buys under 65 lovelace now yield 0).
+#     336 checks green. The rounding-direction residual on the AMM paths closes as
+#     a side effect — the floor lands on the amount OUT now, the Uniswap/Minswap
+#     convention.
+lump_pool.lump_pool_v3.spend  b8a5c48146a104e1f20796aa63582d0eef3e79243388be40ed3f00d3
 
 # ── The one-shot minting policy, UNAPPLIED ────────────────────────────────────
 #
@@ -308,4 +328,13 @@ lump_pool.lump_pool_v3.spend  e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6a
 #     both quote directions, both datum lies, both fee omissions, both
 #     one-lovelace fee boundaries, free tokens, seeded-ADA-buys-nothing,
 #     closing the curve at genesis, and a pool below the floor).
+#   (v3.2, 2026-07-27: the UNAPPLIED mint bytes are UNCHANGED at f1c0f9d9… —
+#    minting_policy.ak imports none of the AMM quote math, and `pool_seeded`'s
+#    genesis-buy recompute uses the CURVE quote, which v3.2 does not touch. But
+#    the pool hash above MOVED and it is applied into every policy id, so v3.2
+#    tokens derive under (seed, b8a5c481…): a NEW COHORT with the SAME unapplied
+#    mint hash. ██ COHORT RESOLUTION MUST THEREFORE KEY ON THE (mint bytes, pool
+#    hash) PAIR ██ — deduping cohorts by mint bytes alone collapses v3.1 and
+#    v3.2 into one entry and mis-derives every policy id in whichever one it
+#    drops.)
 minting_policy.lump_mint_v3.mint  f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd

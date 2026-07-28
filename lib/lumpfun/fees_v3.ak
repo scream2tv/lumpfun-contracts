@@ -6,6 +6,11 @@
 // (This replaced §4.1's 0.80% + 0.50% + 0.50 ADA snek.fun-parity schedule; none
 // of those numbers survive anywhere in this cohort.)
 //
+// v3.2 adds `params_v3.amm_lp_fee_bps_v3` (0.30%, AMM trades only) — retained
+// IN the pool reserves by the quote functions in math_v3, paid to NO output.
+// It therefore appears nowhere in this module: these checks govern the two fee
+// OUTPUTS, and those are unchanged.
+//
 // ── BUY FEES ARE A SURCHARGE; SELL FEES ARE A DEDUCTION ──────────────────────
 // The two sides are NOT symmetric and the plan's §4.2 tables do not say so.
 //
@@ -253,10 +258,11 @@ test fee_zero_hatch_domain_on_a_closing_buy() {
 /// lifetime like the closing buy. The exact boundary of the arithmetic:
 ///
 ///   creator_fee(g, 100) == 0  ⟺  g × 100 < 10,000  ⟺  g <= 99
-///   a ONE-TOKEN AmmSell from (16,717,047,886, 261,203,875) grosses 64:
-///       k = 4,366,557,686,383,758,250 ; new_tok = 261,203,876
-///       new_ada = k / 261,203,876 = 16,717,047,822 ; gross = 64
-///   so the realistic dust-sell gross sits at 64, mid-hatch, not at a contrived 1.
+///   v3.2: a ONE-token AmmSell grosses 0 (the 0.30% net floors one token to
+///   nothing before it reaches the constant product); a TWO-token sell from
+///   (16,717,047,886, 261,203,875) nets 1 token and grosses
+///       ⌊1 × 16,717,047,886 / 261,203,876⌋ = 63
+///   so the realistic dust-sell gross sits at 63, mid-hatch, not at a contrived 1.
 ///
 /// 99 is the last zero and 100 is the first non-zero, which is the whole domain
 /// (it was [1..124] under the old 80 bps rate). The platform still collects its

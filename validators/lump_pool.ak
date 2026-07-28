@@ -1165,18 +1165,16 @@ fn validate_amm_buy(
 
   // SOLVENCY — the pool must keep at least one token.
   //
-  // Unreachable on a genuine pool: `new_tok = k / (ada_reserve + ada_in)` hits 0
-  // only for `ada_in > k − ada_reserve`, and at the canonical graduated state that
-  // is ~4.37e18 lovelace, i.e. ~97× the entire ADA supply. Spending the whole ADA
-  // supply leaves 97 tokens (`math_v3.amm_buy_cannot_empty_the_token_side`).
-  //
-  // IT IS REACHABLE ON A SELF-SEEDED POOL graduated at `ada_reserve = 1`, where
-  // k = 261,203,875 and 262 ADA empties the token side. And it is what keeps the
-  // arithmetic LOCAL rather than resting on how stdlib normalises a zero quantity:
-  // `assets.add(_, _, 0)` is a no-op, so a zero-token continuation loses an ENTRY
-  // and is rejected by `value_shape_ok`'s `length == 3` instead. Both are needed
-  // and `mutverify.sh` binds them as a MATCHED PAIR rather than claiming either is
-  // independently isolated.
+  // ██ STRUCTURALLY SHADOWED AS OF v3.2, AND KEPT DELIBERATELY. ██ The quote
+  // floors the amount OUT — `tokens_out = ⌊net·T/(A+net)⌋ < T` at EVERY state —
+  // so no transaction that passes `correct_tokens_out` can present a zero token
+  // reserve, not even against a self-seeded pool graduated at `ada_reserve = 1`
+  // (pre-v3.2, 262 ADA emptied that pool's token side; now the entire ADA supply
+  // leaves one token — `amm_tiny_k_pool_token_side_cannot_be_emptied`). The
+  // guard stays as defence in depth: it costs one comparison, and a future
+  // cohort that changes the rounding direction gets it back for free.
+  // `mutverify.sh` documents the shadowing (neutering it changes nothing
+  // observable) rather than claiming isolation it cannot have.
   let solvency_ok = new_tok >= 1
 
   let slippage_ok = tokens_out >= min_out
@@ -1291,12 +1289,11 @@ fn validate_amm_sell(
   let cap_ok = new_tok <= total_supply_v3
 
   // SOLVENCY — the pool must keep at least one lovelace. Same standing as
-  // `validate_amm_buy`'s `solvency_ok`: unreachable on a genuine pool (dumping
-  // 100% of the float still leaves 4,366 ADA —
-  // `math_v3.amm_sell_of_the_whole_float_leaves_4366_ada`), reachable on a
-  // self-seeded pool graduated at `ada_reserve = 1`, and a matched pair with
-  // `value_shape_ok` because a zero-lovelace continuation loses an entry rather
-  // than carrying a zero.
+  // `validate_amm_buy`'s `solvency_ok`: STRUCTURALLY SHADOWED as of v3.2
+  // (`gross = ⌊net·A/(T+net)⌋ < A` at every state — dumping 100% of the float
+  // leaves 4,376 ADA, and a tiny-k pool's single lovelace can never be
+  // extracted, `amm_tiny_k_pool_ada_side_cannot_be_emptied`), and KEPT as
+  // defence in depth against a future rounding change.
   let solvency_ok = new_ada >= 1
 
   // Fees are DEDUCTED from the gross on a sell, exactly as on the curve.
@@ -2742,7 +2739,7 @@ test graduate_accepts_an_incidental_required_signer() {
 /// reserve (`pool_types.with_graduation_ignores_the_input_token_reserve` pins that
 /// deliberately), and `expected_value` is built from the same constant. So the
 /// continuation is perfectly self-consistent while 887,323,943 − 261,203,875 =
-/// 626,120,068 tokens walk out of the pool, plus the 10 ADA bounty.
+/// 626,120,068 tokens walk out of the pool, plus the 2.5 ADA bounty.
 ///
 /// `curve_ok` — `graduation_curve_checks`' G0 — is the ONLY guard rejecting it.
 /// That is why the rebase being unconditional is safe: G0 is what conditions it.
@@ -2941,8 +2938,8 @@ test amm_buy_rejects_flipping_the_mode_back_to_bootstrap() fail {
       [
         am_out(
           ga + 1_000_000_000,
-          246_460_793,
-          pd_mode(ga + 1_000_000_000, 246_460_793, Bootstrap),
+          246_502_534,
+          pd_mode(ga + 1_000_000_000, 246_502_534, Bootstrap),
         ),
         plat(2_000_000),
         crea(10_000_000),
@@ -2958,12 +2955,12 @@ test amm_sell_rejects_flipping_the_mode_back_to_bootstrap() fail {
       [am_in(ga, gt, d)],
       [
         am_out(
-          12_088_900_448,
+          12_098_949_302,
           361_203_875,
-          pd_mode(12_088_900_448, 361_203_875, Bootstrap),
+          pd_mode(12_098_949_302, 361_203_875, Bootstrap),
         ),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     )
   spend_pool(d, AmmSell { min_out: 4_500_000_000 }, tx)
@@ -3503,11 +3500,11 @@ test graduate_rejects_a_pool_input_without_the_nft() fail {
 // `mode_ok` line is what turns each of these from red to green.
 //
 // TWO of the four are THEFTS and two are MISPRICINGS, and the asymmetry is worth
-// stating because it says which line to be most careful with:
-//   AmmBuy on Bootstrap   STEALS TOKENS   515,090,543 vs 92,452,149 (5.571×)
-//   Sell   on Amm         STEALS ADA      773,501,488 vs 393,502,173 (1.966×)
-//   Buy    on Amm         shortchanges the buyer  23,518,097 vs 44,059,553
-//   AmmSell on Bootstrap  shortchanges the seller 41,765,471 vs 232,693,338
+// stating because it says which line to be most careful with (v3.2 quotes):
+//   AmmBuy on Bootstrap   STEALS TOKENS   514,316,746 vs 92,452,149 (5.563×)
+//   Sell   on Amm         STEALS ADA      773,501,488 vs 392,370,589 (1.971×)
+//   Buy    on Amm         shortchanges the buyer  23,518,097 vs 43,939,966
+//   AmmSell on Bootstrap  shortchanges the seller 41,642,783 vs 232,693,338
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// ██ 1 of 4 — `AmmBuy` ON A BOOTSTRAP POOL. 51.5% OF SUPPLY FOR 1,000 ADA. ██
@@ -3516,22 +3513,20 @@ test graduate_rejects_a_pool_input_without_the_nft() fail {
 /// that has raised 1,000 ADA. Value: 1,002,500,000 lovelace, 887,323,943 tokens.
 ///
 /// `amm_quote_buy` prices on `ada_reserve` alone, omitting the 9,142.86 ADA virtual
-/// cushion:
-///   k       = 1,000,000,000 × 1,030,181,086 = 1,030,181,086,000,000,000
-///   new_ada = 2,000,000,000
-///   new_tok = k / 2,000,000,000 = 515,090,543
-///   out     = 1,030,181,086 − 515,090,543 = 515,090,543
+/// cushion (v3.2 nets the input first and floors the amount out):
+///   net = 1,000,000,000 × 9,970 / 10,000 = 997,000,000
+///   out = ⌊997,000,000 × 1,030,181,086 / 1,997,000,000⌋ = 514,316,746
 /// against the correct curve quote of 92,452,149:
 ///   effective = 1,000,000,000 + 9,142,857,144 = 10,142,857,144
 ///   k_curve   = 10,142,857,144 × 1,030,181,086
 ///   new_tok   = k_curve / 11,142,857,144 = 937,728,937
 ///   out       = 1,030,181,086 − 937,728,937 = 92,452,149
-/// 515,090,543 / 92,452,149 = 5.571×, and 515,090,543 / 1e9 = 51.51% OF TOTAL
+/// 514,316,746 / 92,452,149 = 5.563×, and 514,316,746 / 1e9 = 51.43% OF TOTAL
 /// SUPPLY, in one transaction, for 1,000 ADA plus 12 ADA of fees.
 ///
 /// Continuation (BOOTSTRAP invariant, because `mode` is still Bootstrap and
-/// `with_reserves` freezes it): 2,002,500,000 lovelace, 515,090,543 − 142,857,143 =
-/// 372,233,400 tokens. Self-consistent. Fees paid in full on `ada_in` = 1e9:
+/// `with_reserves` freezes it): 2,002,500,000 lovelace, 515,864,340 − 142,857,143 =
+/// 373,007,197 tokens. Self-consistent. Fees paid in full on `ada_in` = 1e9:
 /// creator 10,000,000, platform 2,000,000 (flat).
 test amm_buy_rejects_a_bootstrap_mode_pool() fail {
   let d = pd(1_000_000_000, 1_030_181_086)
@@ -3539,12 +3534,12 @@ test amm_buy_rejects_a_bootstrap_mode_pool() fail {
     base_tx(
       [p_in(1_000_000_000, 1_030_181_086, d)],
       [
-        p_out(2_000_000_000, 515_090_543, pd(2_000_000_000, 515_090_543)),
+        p_out(2_000_000_000, 515_864_340, pd(2_000_000_000, 515_864_340)),
         plat(2_000_000),
         crea(10_000_000),
       ],
     )
-  spend_pool(d, AmmBuy { min_out: 515_000_000 }, tx)
+  spend_pool(d, AmmBuy { min_out: 514_000_000 }, tx)
 }
 
 /// ██ 2 of 4 — `Sell` ON AN AMM POOL. 380 ADA OUT OF THE POOL, REPEATABLY. ██
@@ -3554,11 +3549,10 @@ test amm_buy_rejects_a_bootstrap_mode_pool() fail {
 /// virtual_ada_v3` — a cushion the graduated pool does not have.
 ///
 /// State chosen so that EVERY other guard on `validate_sell` passes, which needs
-/// `token_reserve > curve_exhausted_token_reserve`. Reachable: sell 200,000,000
-/// tokens into the fresh graduated pool.
-///   k       = 16,717,047,886 × 261,203,875 = 4,366,557,686,383,758,250
-///   new_tok = 261,203,875 + 200,000,000 = 461,203,875
-///   new_ada = k / 461,203,875 = 9,467,738,505
+/// `token_reserve > curve_exhausted_token_reserve`. Approximately reachable:
+/// selling 200,000,000 tokens into the fresh graduated pool lands on
+/// (9,480,071,540, 461,203,875) under the v3.2 quotes — the fixture keeps the
+/// nearby pre-fee state, which is every bit as valid an Amm datum:
 ///   ⇒ Amm pool (9,467,738,505, 461,203,875), and 461,203,875 > 404,061,018 so
 ///     `open_ok` passes.
 /// The `Sell` of 20,000,000 tokens then grosses, on the CURVE formula:
@@ -3566,7 +3560,7 @@ test amm_buy_rejects_a_bootstrap_mode_pool() fail {
 ///   k_curve   = 18,610,595,649 × 461,203,875
 ///   new_eff   = k_curve / 481,203,875 = 17,837,094,161
 ///   gross     = 18,610,595,649 − 17,837,094,161 = 773,501,488
-/// where the correct `AmmSell` grosses 393,502,173 — 1.966×, i.e. 380.0 ADA
+/// where the correct `AmmSell` grosses 392,370,589 — 1.971×, i.e. 381.1 ADA
 /// extracted on ONE trade, and repeatable until the pool is empty.
 /// `cap_ok` passes (481,203,875 <= 1,142,857,143), `correct_gross` passes because
 /// the curve quote is exactly what is presented, and both fees are paid on the
@@ -3594,7 +3588,7 @@ test sell_rejects_an_amm_mode_pool() fail {
 ///   k_curve   = 18,610,595,649 × 461,203,875
 ///   new_tok   = k_curve / 19,610,595,649 = 437,685,778
 ///   out       = 461,203,875 − 437,685,778 = 23,518,097
-/// against the correct `AmmBuy` of 44,059,553 — the buyer keeps 53.4% of what the
+/// against the correct `AmmBuy` of 43,939,966 — the buyer keeps 53.5% of what the
 /// pool owes them and the pool keeps the rest. Not a drain, and rejected anyway: a
 /// validator that lets a trader be paid half of what the pool owes is a mis-priced
 /// trade any aggregator or buggy builder can walk a user into.
@@ -3626,25 +3620,25 @@ test buy_rejects_an_amm_mode_pool() fail {
 /// `validate_amm_sell`'s `cap_ok` (`new_tok <= 1e9`) also passes and `mode_ok` is
 /// the ONLY guard rejecting — a mid-curve state closer to genesis would have
 /// tripped the cap as well and the test would not have isolated anything.
-///   amm gross: k_amm = 2,000,000,000 × 937,728,937
-///              new_ada = k_amm / 957,728,937 = 1,958,234,529
-///              gross = 41,765,471
+///   amm gross (v3.2): net = 20,000,000 × 9,970/10,000 = 19,940,000
+///              gross = ⌊19,940,000 × 2,000,000,000 / 957,668,937⌋ = 41,642,783
+///              continuation ada = 2,000,000,000 − 41,642,783 = 1,958,357,217
 ///   curve gross for the same 20,000,000 tokens: 232,693,338
 /// The seller is paid 17.9% of what the curve owes. Continuation (Bootstrap
-/// invariant): 1,960,734,529 lovelace, 814,871,794 tokens. Fees on the deflated
-/// gross: creator 417,654, platform 2,000,000 (flat); net 39,347,817.
+/// invariant): 1,960,857,217 lovelace, 814,871,794 tokens. Fees on the deflated
+/// gross: creator 416,427, platform 2,000,000 (flat); net 39,226,356.
 test amm_sell_rejects_a_bootstrap_mode_pool() fail {
   let d = pd(2_000_000_000, 937_728_937)
   let tx =
     base_tx(
       [p_in(2_000_000_000, 937_728_937, d)],
       [
-        p_out(1_958_234_529, 957_728_937, pd(1_958_234_529, 957_728_937)),
+        p_out(1_958_357_217, 957_728_937, pd(1_958_357_217, 957_728_937)),
         plat(2_000_000),
-        crea(417_654),
+        crea(416_427),
       ],
     )
-  spend_pool(d, AmmSell { min_out: 39_347_817 }, tx)
+  spend_pool(d, AmmSell { min_out: 39_226_356 }, tx)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3652,11 +3646,11 @@ test amm_sell_rejects_a_bootstrap_mode_pool() fail {
 //
 //   old = (16,717,047,886, 261,203,875)   value: 16,717,047,886 lovelace,
 //                                                261,203,875 tokens, 1 NFT
-//   k = 16,717,047,886 × 261,203,875 = 4,366,557,686,383,758,250
-//   ada_in = 1,000,000,000
-//   new_ada = 17,717,047,886
-//   new_tok = k / 17,717,047,886 = 246,460,793
-//   tokens_out = 261,203,875 − 246,460,793 = 14,743,082
+//   v3.2 quote (net input priced, amount OUT floored; FULL ada_in enters the pool):
+//   net = 1,000,000,000 × 9,970 / 10,000 = 997,000,000
+//   tokens_out = ⌊997,000,000 × 261,203,875 / 17,714,047,886⌋ = 14,701,341
+//   new_ada = 17,717,047,886          (full ada_in — the 0.30% stays in the pool)
+//   new_tok = 261,203,875 − 14,701,341 = 246,502,534
 //   creator  = 1,000,000,000 × 100 / 10,000 = 10,000,000
 //   platform = 2,000,000 (the flat fee is the whole platform take; bps is 0)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3666,7 +3660,7 @@ fn ab_old() -> PoolDatum {
 }
 
 fn ab_new() -> PoolDatum {
-  pdm(17_717_047_886, 246_460_793)
+  pdm(17_717_047_886, 246_502_534)
 }
 
 fn ab_tx_outs(outs: List<Output>) -> Transaction {
@@ -3676,7 +3670,7 @@ fn ab_tx_outs(outs: List<Output>) -> Transaction {
 fn ab_good_tx() -> Transaction {
   ab_tx_outs(
     [
-      am_out(17_717_047_886, 246_460_793, ab_new()),
+      am_out(17_717_047_886, 246_502_534, ab_new()),
       plat(2_000_000),
       crea(10_000_000),
     ],
@@ -3688,19 +3682,19 @@ test amm_buy_accepts_the_canonical_trade() {
 }
 
 test amm_buy_rejects_underpay_slippage() fail {
-  spend_pool(ab_old(), AmmBuy { min_out: 14_743_083 }, ab_good_tx())
+  spend_pool(ab_old(), AmmBuy { min_out: 14_701_342 }, ab_good_tx())
 }
 
 /// One token more than the constant product owes. The branch compares the exact
 /// quote, so this is caught arithmetically.
 test amm_buy_rejects_one_extra_token_out() fail {
-  let bad = pdm(17_717_047_886, 246_460_792)
+  let bad = pdm(17_717_047_886, 246_502_533)
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_792, bad),
+        am_out(17_717_047_886, 246_502_533, bad),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -3711,13 +3705,13 @@ test amm_buy_rejects_one_extra_token_out() fail {
 /// …and one token fewer, which shortchanges the buyer rather than the pool. Also
 /// refused: the quote is an equality.
 test amm_buy_rejects_one_token_short() fail {
-  let bad = pdm(17_717_047_886, 246_460_794)
+  let bad = pdm(17_717_047_886, 246_502_535)
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_794, bad),
+        am_out(17_717_047_886, 246_502_535, bad),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -3733,17 +3727,18 @@ test amm_buy_rejects_one_token_short() fail {
 /// trades; the pair stays because the two fixtures straddle the floor-division
 /// step and pin `correct_tokens_out` on identical outputs for different inputs.
 ///
-///   ada_in = 10,000,000: new_ada = 16,727,047,886, new_tok = k / that = 261,047,718
-///                        tokens_out = 156,157 ; creator 100,000, platform 2,000,000
+///   ada_in = 10,000,000: net = 9,970,000, tokens_out = 155,688
+///                        new_ada = 16,727,047,886, new_tok = 261,048,187
+///                        creator 100,000, platform 2,000,000
 /// A 10 ADA AmmBuy. It was named for a minimum that no longer exists — the AMM
 /// branch now admits any positive size, so this is just an ordinary small trade.
 test amm_buy_accepts_a_small_trade() {
   spend_pool(
     ab_old(),
-    AmmBuy { min_out: 156_157 },
+    AmmBuy { min_out: 155_688 },
     ab_tx_outs(
       [
-        am_out(16_727_047_886, 261_047_718, pdm(16_727_047_886, 261_047_718)),
+        am_out(16_727_047_886, 261_048_187, pdm(16_727_047_886, 261_048_187)),
         plat(2_000_000),
         crea(100_000),
       ],
@@ -3752,21 +3747,22 @@ test amm_buy_accepts_a_small_trade() {
 }
 
 /// ONE LOVELACE UNDER THE OLD MINIMUM, NOW ACCEPTED. 9,999,999 lovelace buys the
-/// SAME 156,157 tokens as 10,000,000 does (the floor division swallows the
-/// difference), so `correct_tokens_out` passes and the arithmetic is entirely
-/// legal. While `size_ok` existed it was the only guard rejecting this; the
-/// guard is deleted, so the test is INVERTED rather than left to "pass" on an
+/// SAME 155,688 tokens as 10,000,000 does (the fee-netting and output floor
+/// swallow the difference), so `correct_tokens_out` passes and the arithmetic is
+/// entirely legal. While `size_ok` existed it was the only guard rejecting this;
+/// the guard is deleted, so the test is INVERTED rather than left to "pass" on an
 /// underpaid fee output — the same deliberate inversion as
 /// `sell_accepts_gross_just_under_the_old_minimum`.
-///   new_ada = 16,727,047,885 ; new_tok = k / that = 261,047,718 ; out = 156,157
+///   net = ⌊9,999,999 × 9,970/10,000⌋ = 9,969,999 ; out = 155,688
+///   new_ada = 16,727,047,885 ; new_tok = 261,048,187
 ///   creator 99,999 ; platform 2,000,000 (flat)
 test amm_buy_accepts_one_lovelace_under_the_old_minimum() {
   spend_pool(
     ab_old(),
-    AmmBuy { min_out: 156_157 },
+    AmmBuy { min_out: 155_688 },
     ab_tx_outs(
       [
-        am_out(16_727_047_885, 261_047_718, pdm(16_727_047_885, 261_047_718)),
+        am_out(16_727_047_885, 261_048_187, pdm(16_727_047_885, 261_048_187)),
         plat(2_000_000),
         crea(99_999),
       ],
@@ -3778,7 +3774,7 @@ test amm_buy_rejects_missing_platform_fee() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    ab_tx_outs([am_out(17_717_047_886, 246_460_793, ab_new()), crea(10_000_000)]),
+    ab_tx_outs([am_out(17_717_047_886, 246_502_534, ab_new()), crea(10_000_000)]),
   )
 }
 
@@ -3788,7 +3784,7 @@ test amm_buy_rejects_platform_fee_one_lovelace_short() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(1_999_999),
         crea(10_000_000),
       ],
@@ -3800,7 +3796,7 @@ test amm_buy_rejects_missing_creator_fee() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    ab_tx_outs([am_out(17_717_047_886, 246_460_793, ab_new()), plat(2_000_000)]),
+    ab_tx_outs([am_out(17_717_047_886, 246_502_534, ab_new()), plat(2_000_000)]),
   )
 }
 
@@ -3810,7 +3806,7 @@ test amm_buy_rejects_creator_fee_one_lovelace_short() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(9_999_999),
       ],
@@ -3836,7 +3832,7 @@ test amm_buy_rejects_a_stray_pool_floor_in_the_continuation() fail {
       [
         am_out_raw(
           17_717_047_886 + pool_floor_v3,
-          246_460_793,
+          246_502_534,
           1,
           ab_new(),
         ),
@@ -3866,7 +3862,7 @@ test amm_buy_rejects_the_token_offset_applied_to_the_continuation() fail {
       [
         am_out_raw(
           17_717_047_886,
-          246_460_793 - token_offset_v3,
+          246_502_534 - token_offset_v3,
           1,
           ab_new(),
         ),
@@ -3898,7 +3894,7 @@ test amm_rejects_an_input_carrying_a_pool_floor() fail {
     base_tx(
       [bad_in],
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -3926,7 +3922,7 @@ test amm_rejects_an_input_holding_the_offset_reduced_balance() fail {
     base_tx(
       [bad_in],
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -3942,7 +3938,7 @@ test amm_buy_rejects_the_nft_carried_out_of_the_pool() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out_raw(17_717_047_886, 246_460_793, 0, ab_new()),
+        am_out_raw(17_717_047_886, 246_502_534, 0, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
         pk_out_token(t_owner, 2_000_000, t_policy, pool_nft_name, 1),
@@ -3953,7 +3949,7 @@ test amm_buy_rejects_the_nft_carried_out_of_the_pool() fail {
 
 test amm_buy_rejects_junk_assets_in_the_continuation() fail {
   let junk =
-    amm_value(17_717_047_886, 246_460_793)
+    amm_value(17_717_047_886, 246_502_534)
       |> assets.add(
           #"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
           #"4a554e4b",
@@ -3978,8 +3974,8 @@ test amm_buy_rejects_two_pool_continuation_outputs() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -3999,7 +3995,7 @@ test amm_buy_rejects_a_stake_credential_on_the_continuation() fail {
         script_out_staked(
           t_pool,
           #"5555555555555555555555555555555555555555555555555555555a",
-          amm_value(17_717_047_886, 246_460_793),
+          amm_value(17_717_047_886, 246_502_534),
           ab_new(),
         ),
         plat(2_000_000),
@@ -4026,7 +4022,7 @@ test amm_buy_rejects_a_stake_part_decoy_alongside_the_continuation() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         decoy,
         plat(2_000_000),
         crea(10_000_000),
@@ -4045,7 +4041,7 @@ test amm_buy_rejects_minting_curve_tokens() fail {
       ..transaction.placeholder,
       inputs: [am_in(ga, gt, ab_old())],
       outputs: [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -4068,7 +4064,7 @@ test amm_buy_rejects_a_second_pool_input() fail {
     base_tx(
       [am_in(ga, gt, ab_old()), second],
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -4083,7 +4079,7 @@ test amm_buy_rejects_a_foreign_script_input() fail {
     base_tx(
       [am_in(ga, gt, ab_old()), foreign],
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -4104,7 +4100,7 @@ test amm_buy_rejects_a_decoy_input_without_the_nft() fail {
     base_tx(
       [no_nft],
       [
-        am_out(17_717_047_886, 246_460_793, ab_new()),
+        am_out(17_717_047_886, 246_502_534, ab_new()),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -4120,7 +4116,7 @@ test amm_buy_rejects_a_decoy_input_without_the_nft() fail {
 fn amm_buy_with_new_datum(new_d: PoolDatum) -> Transaction {
   ab_tx_outs(
     [
-      am_out(17_717_047_886, 246_460_793, new_d),
+      am_out(17_717_047_886, 246_502_534, new_d),
       plat(2_000_000),
       crea(10_000_000),
     ],
@@ -4131,7 +4127,7 @@ test r5_amm_rejects_rewriting_the_royalty_pub_key() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_royalty(17_717_047_886, 246_460_793, t_evil_royalty)),
+    amm_buy_with_new_datum(am_royalty(17_717_047_886, 246_502_534, t_evil_royalty)),
   )
 }
 
@@ -4139,7 +4135,7 @@ test r5_amm_rejects_rewriting_the_creator_pkh() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_creator(17_717_047_886, 246_460_793, t_owner)),
+    amm_buy_with_new_datum(am_creator(17_717_047_886, 246_502_534, t_owner)),
   )
 }
 
@@ -4147,7 +4143,7 @@ test r5_amm_rejects_rewriting_the_treasury_pkh() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_treasury(17_717_047_886, 246_460_793, t_owner)),
+    amm_buy_with_new_datum(am_treasury(17_717_047_886, 246_502_534, t_owner)),
   )
 }
 
@@ -4155,7 +4151,7 @@ test r5_amm_rejects_rewriting_the_policy_id() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_policy(17_717_047_886, 246_460_793, #"deadbeef")),
+    amm_buy_with_new_datum(am_policy(17_717_047_886, 246_502_534, #"deadbeef")),
   )
 }
 
@@ -4163,7 +4159,7 @@ test r5_amm_rejects_rewriting_the_asset_name() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_name(17_717_047_886, 246_460_793, #"42414441")),
+    amm_buy_with_new_datum(am_name(17_717_047_886, 246_502_534, #"42414441")),
   )
 }
 
@@ -4171,7 +4167,7 @@ test r5_amm_rejects_zeroing_the_creator_fee_bps() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_cbps(17_717_047_886, 246_460_793, 0)),
+    amm_buy_with_new_datum(am_cbps(17_717_047_886, 246_502_534, 0)),
   )
 }
 
@@ -4181,7 +4177,7 @@ test r5_amm_rejects_rewriting_the_platform_fee_bps() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_pbps(17_717_047_886, 246_460_793, 50)),
+    amm_buy_with_new_datum(am_pbps(17_717_047_886, 246_502_534, 50)),
   )
 }
 
@@ -4189,7 +4185,7 @@ test r5_amm_rejects_zeroing_the_platform_fee_flat() fail {
   spend_pool(
     ab_old(),
     AmmBuy { min_out: 14_700_000 },
-    amm_buy_with_new_datum(am_pflat(17_717_047_886, 246_460_793, 0)),
+    amm_buy_with_new_datum(am_pflat(17_717_047_886, 246_502_534, 0)),
   )
 }
 
@@ -4197,50 +4193,51 @@ test r5_amm_rejects_zeroing_the_platform_fee_flat() fail {
 // AMM SELL — the canonical trade
 //
 //   old = (16,717,047,886, 261,203,875)
-//   tokens_in = 100,000,000
+//   tokens_in = 100,000,000 (v3.2: FULL amount enters the pool; quote nets it)
+//   net = 99,700,000
+//   gross = ⌊99,700,000 × 16,717,047,886 / 360,903,875⌋ = 4,618,098,584
 //   new_tok = 361,203,875
-//   new_ada = k / 361,203,875 = 12,088,900,448
-//   gross = 16,717,047,886 − 12,088,900,448 = 4,628,147,438
-//   creator  = 4,628,147,438 × 100 / 10,000 = 46,281,474
+//   new_ada = 16,717,047,886 − 4,618,098,584 = 12,098,949,302
+//   creator  = 4,618,098,584 × 100 / 10,000 = 46,180,985
 //   platform = 2,000,000 (flat; bps is 0)
-//   net = 4,628,147,438 − 46,281,474 − 2,000,000 = 4,579,865,964
+//   net proceeds = 4,618,098,584 − 46,180,985 − 2,000,000 = 4,569,917,599
 // ══════════════════════════════════════════════════════════════════════════════
 
 fn as_new() -> PoolDatum {
-  pdm(12_088_900_448, 361_203_875)
+  pdm(12_098_949_302, 361_203_875)
 }
 
 fn as_good_tx() -> Transaction {
   base_tx(
     [am_in(ga, gt, ab_old())],
     [
-      am_out(12_088_900_448, 361_203_875, as_new()),
+      am_out(12_098_949_302, 361_203_875, as_new()),
       plat(2_000_000),
-      crea(46_281_474),
+      crea(46_180_985),
     ],
   )
 }
 
 test amm_sell_accepts_the_canonical_trade() {
-  spend_pool(ab_old(), AmmSell { min_out: 4_579_865_964 }, as_good_tx())
+  spend_pool(ab_old(), AmmSell { min_out: 4_569_917_599 }, as_good_tx())
 }
 
 test amm_sell_rejects_underpay_slippage() fail {
-  spend_pool(ab_old(), AmmSell { min_out: 4_579_865_965 }, as_good_tx())
+  spend_pool(ab_old(), AmmSell { min_out: 4_569_917_600 }, as_good_tx())
 }
 
 /// One lovelace more gross than the constant product owes.
 test amm_sell_rejects_over_extracting_ada() fail {
-  let bad = pdm(12_088_900_447, 361_203_875)
+  let bad = pdm(12_098_949_301, 361_203_875)
   spend_pool(
     ab_old(),
     AmmSell { min_out: 4_500_000_000 },
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out(12_088_900_447, 361_203_875, bad),
+        am_out(12_098_949_301, 361_203_875, bad),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     ),
   )
@@ -4251,9 +4248,9 @@ test amm_sell_rejects_over_extracting_ada() fail {
 /// extended note), so neither branch has one and neither should gain one.
 ///
 /// ── ██ BUT THE 2 ADA FLAT FEE IS NOW A DE-FACTO FLOOR, AND IT BITES HERE. ██ ─
-/// This 1,000-token sell grosses 64,000 lovelace against a platform fee of
+/// This 1,000-token sell grosses 63,807 lovelace against a platform fee of
 /// 2,000,000. The gross CANNOT cover it, so the seller must fund the fee from
-/// their own UTxOs and the trade nets −1,936,640 — they pay ~1.94 ADA for the
+/// their own UTxOs and the trade nets −1,936,831 — they pay ~1.94 ADA for the
 /// privilege of selling 1,000 tokens.
 ///
 /// THE VALIDATOR STILL ACCEPTS IT, and that is the point of this test.
@@ -4267,19 +4264,20 @@ test amm_sell_rejects_over_extracting_ada() fail {
 /// whose ENTIRE bag grosses less than ~2 ADA cannot exit profitably. That is
 /// inherent to a flat fee and v2 behaves identically with its own 2 ADA flat fee,
 /// so it is parity, not a regression.
-///   new_tok = 261,204,875 ; new_ada = k / that = 16,716,983,886
-///   gross = 64,000 ; creator 1% = 640 ; platform flat = 2,000,000
+///   net = 997 ; gross = ⌊997 × 16,717,047,886 / 261,204,872⌋ = 63,807
+///   new_tok = 261,204,875 ; new_ada = 16,716,984,079
+///   creator 1% = 638 ; platform flat = 2,000,000
 test amm_sell_accepts_a_dust_sell_with_no_minimum() {
   let tx =
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out(16_716_983_886, 261_204_875, pdm(16_716_983_886, 261_204_875)),
+        am_out(16_716_984_079, 261_204_875, pdm(16_716_984_079, 261_204_875)),
         plat(2_000_000),
-        crea(640),
+        crea(638),
       ],
     )
-  spend_pool(ab_old(), AmmSell { min_out: -1_936_640 }, tx)
+  spend_pool(ab_old(), AmmSell { min_out: -1_936_831 }, tx)
 }
 
 /// A zero-token sell — a no-op that would still collect a bounty from nowhere.
@@ -4306,40 +4304,41 @@ test amm_sell_rejects_zero_tokens_in() fail {
 /// The largest legal sell is the whole float, `sellable_v3` = 738,796,125, which
 /// lands the reserve on exactly 1e9. ONE TOKEN MORE is refused.
 ///   tokens_in = 738,796,126 ⇒ new_tok = 1,000,000,001
-///   new_ada = k / 1,000,000,001 = 4,366,557,682 ; gross = 12,350,490,204
-///   creator 123,504,902 ; platform 2,000,000 (flat) ; net 12,224,985,302
+///   net = 736,579,737 ; gross = 12,340,790,715 ; new_ada = 4,376,257,171
+///   creator 123,407,907 ; platform 2,000,000 (flat) ; net 12,215,382,808
 test amm_sell_rejects_pushing_the_reserve_above_total_supply() fail {
   let tx =
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out(4_366_557_682, 1_000_000_001, pdm(4_366_557_682, 1_000_000_001)),
+        am_out(4_376_257_171, 1_000_000_001, pdm(4_376_257_171, 1_000_000_001)),
         plat(2_000_000),
-        crea(123_504_902),
+        crea(123_407_907),
       ],
     )
   spend_pool(ab_old(), AmmSell { min_out: 12_000_000_000 }, tx)
 }
 
 /// …and the CONTROL at exactly the cap: dumping 100% of the float is legal, and it
-/// leaves the pool holding 4,366,557,686 lovelace = 4,366.56 ADA. This is the
+/// leaves the pool holding 4,376,257,175 lovelace = 4,376.26 ADA (v3.2: MORE than
+/// the pre-fee 4,366.56 — the LP fee raises the locked floor). This is the
 /// arithmetic behind "liquidity is locked for life" — no volume of selling can
 /// empty the pool, so the absence of a withdraw redeemer is backed by the model and
 /// not merely by the missing branch.
 ///   tokens_in = 738,796,125 ⇒ new_tok = 1,000,000,000
-///   new_ada = k / 1e9 = 4,366,557,686 ; gross = 12,350,490,200
-///   creator 123,504,902 ; platform 2,000,000 (flat) ; net 12,224,985,298
+///   net = 736,579,736 ; gross = 12,340,790,711 ; new_ada = 4,376,257,175
+///   creator 123,407,907 ; platform 2,000,000 (flat) ; net 12,215,382,804
 test amm_sell_accepts_dumping_the_entire_float() {
   let tx =
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out(4_366_557_686, 1_000_000_000, pdm(4_366_557_686, 1_000_000_000)),
+        am_out(4_376_257_175, 1_000_000_000, pdm(4_376_257_175, 1_000_000_000)),
         plat(2_000_000),
-        crea(123_504_902),
+        crea(123_407_907),
       ],
     )
-  spend_pool(ab_old(), AmmSell { min_out: 12_224_985_298 }, tx)
+  spend_pool(ab_old(), AmmSell { min_out: 12_215_382_804 }, tx)
 }
 
 test amm_sell_rejects_missing_platform_fee() fail {
@@ -4348,7 +4347,7 @@ test amm_sell_rejects_missing_platform_fee() fail {
     AmmSell { min_out: 4_567_481_522 },
     base_tx(
       [am_in(ga, gt, ab_old())],
-      [am_out(12_088_900_448, 361_203_875, as_new()), crea(46_281_474)],
+      [am_out(12_098_949_302, 361_203_875, as_new()), crea(46_180_985)],
     ),
   )
 }
@@ -4359,7 +4358,7 @@ test amm_sell_rejects_missing_creator_fee() fail {
     AmmSell { min_out: 4_567_481_522 },
     base_tx(
       [am_in(ga, gt, ab_old())],
-      [am_out(12_088_900_448, 361_203_875, as_new()), plat(2_000_000)],
+      [am_out(12_098_949_302, 361_203_875, as_new()), plat(2_000_000)],
     ),
   )
 }
@@ -4371,9 +4370,9 @@ test amm_sell_rejects_the_nft_carried_out_of_the_pool() fail {
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out_raw(12_088_900_448, 361_203_875, 0, as_new()),
+        am_out_raw(12_098_949_302, 361_203_875, 0, as_new()),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
         pk_out_token(t_owner, 2_000_000, t_policy, pool_nft_name, 1),
       ],
     ),
@@ -4382,7 +4381,7 @@ test amm_sell_rejects_the_nft_carried_out_of_the_pool() fail {
 
 test amm_sell_rejects_junk_assets_in_the_continuation() fail {
   let junk =
-    amm_value(12_088_900_448, 361_203_875)
+    amm_value(12_098_949_302, 361_203_875)
       |> assets.add(
           #"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
           #"4a554e4b",
@@ -4393,7 +4392,7 @@ test amm_sell_rejects_junk_assets_in_the_continuation() fail {
     AmmSell { min_out: 4_567_481_522 },
     base_tx(
       [am_in(ga, gt, ab_old())],
-      [script_out(t_pool, junk, as_new()), plat(2_000_000), crea(46_281_474)],
+      [script_out(t_pool, junk, as_new()), plat(2_000_000), crea(46_180_985)],
     ),
   )
 }
@@ -4406,12 +4405,12 @@ test r5_amm_sell_rejects_rewriting_the_royalty_pub_key() fail {
       [am_in(ga, gt, ab_old())],
       [
         am_out(
-          12_088_900_448,
+          12_098_949_302,
           361_203_875,
-          am_royalty(12_088_900_448, 361_203_875, t_evil_royalty),
+          am_royalty(12_098_949_302, 361_203_875, t_evil_royalty),
         ),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     ),
   )
@@ -4425,12 +4424,12 @@ test r5_amm_sell_rejects_rewriting_the_treasury_pkh() fail {
       [am_in(ga, gt, ab_old())],
       [
         am_out(
-          12_088_900_448,
+          12_098_949_302,
           361_203_875,
-          am_treasury(12_088_900_448, 361_203_875, t_owner),
+          am_treasury(12_098_949_302, 361_203_875, t_owner),
         ),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     ),
   )
@@ -4477,11 +4476,11 @@ test amm_sell_rejects_a_stake_credential_on_the_continuation() fail {
         script_out_staked(
           t_pool,
           #"5555555555555555555555555555555555555555555555555555555a",
-          amm_value(12_088_900_448, 361_203_875),
+          amm_value(12_098_949_302, 361_203_875),
           as_new(),
         ),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     )
   spend_pool(ab_old(), AmmSell { min_out: 4_567_481_522 }, tx)
@@ -4503,10 +4502,10 @@ test amm_sell_rejects_a_stake_part_decoy_alongside_the_continuation() fail {
     base_tx(
       [am_in(ga, gt, ab_old())],
       [
-        am_out(12_088_900_448, 361_203_875, as_new()),
+        am_out(12_098_949_302, 361_203_875, as_new()),
         decoy,
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     )
   spend_pool(ab_old(), AmmSell { min_out: 4_567_481_522 }, tx)
@@ -4527,7 +4526,7 @@ test amm_sell_rejects_a_stake_part_decoy_alongside_the_continuation() fail {
 /// a zero platform fee, SELLING through the official validator paying LumpFun
 /// nothing, forever, on the half of a token's life that carries most of its volume.
 ///   d = (ga, gt) with treasury/creator = t_owner and 0/0/0
-///   tokens_in 100,000,000 ⇒ gross 4,628,147,438, and with a 0/0/0 schedule the
+///   tokens_in 100,000,000 ⇒ gross 4,618,098,584, and with a 0/0/0 schedule the
 ///   trader owes NO fee outputs at all, so the transaction carries none.
 test amm_sell_rejects_a_zero_platform_fee_self_seeded_pool() fail {
   let d = dat(t_policy, t_name, ga, gt, t_owner, t_owner, 0, 0, 0, t_royalty, Amm)
@@ -4535,7 +4534,7 @@ test amm_sell_rejects_a_zero_platform_fee_self_seeded_pool() fail {
     dat(
       t_policy,
       t_name,
-      12_088_900_448,
+      12_098_949_302,
       361_203_875,
       t_owner,
       t_owner,
@@ -4548,9 +4547,9 @@ test amm_sell_rejects_a_zero_platform_fee_self_seeded_pool() fail {
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
-      [am_out(12_088_900_448, 361_203_875, new_d), pk_out(t_owner, 2_000_000)],
+      [am_out(12_098_949_302, 361_203_875, new_d), pk_out(t_owner, 2_000_000)],
     )
-  spend_pool(d, AmmSell { min_out: 4_628_147_438 }, tx)
+  spend_pool(d, AmmSell { min_out: 4_618_098_584 }, tx)
 }
 
 /// The same call site reached the other way: an on-schedule pool whose datum names a
@@ -4560,14 +4559,14 @@ test amm_sell_rejects_a_zero_platform_fee_self_seeded_pool() fail {
 test amm_sell_rejects_a_pool_whose_datum_names_a_foreign_treasury() fail {
   let foreign = #"7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"
   let d = am_treasury(ga, gt, foreign)
-  let new_d = am_treasury(12_088_900_448, 361_203_875, foreign)
+  let new_d = am_treasury(12_098_949_302, 361_203_875, foreign)
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
       [
-        am_out(12_088_900_448, 361_203_875, new_d),
+        am_out(12_098_949_302, 361_203_875, new_d),
         pk_out(foreign, 2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     )
   spend_pool(d, AmmSell { min_out: 4_567_481_522 }, tx)
@@ -4575,15 +4574,15 @@ test amm_sell_rejects_a_pool_whose_datum_names_a_foreign_treasury() fail {
 
 /// The pool as its OWN treasury, on the sell side. A script hash is 28 bytes so
 /// every length assertion passes; without `pays_at_least`'s pool-address exclusion
-/// the continuation — which still holds 12,088 ADA after the sell — satisfies the
+/// the continuation — which still holds 12,098 ADA after the sell — satisfies the
 /// platform fee check with no fee output in the transaction at all.
 test amm_sell_rejects_the_pool_paying_its_own_platform_fee() fail {
   let d = am_treasury(ga, gt, t_pool)
-  let new_d = am_treasury(12_088_900_448, 361_203_875, t_pool)
+  let new_d = am_treasury(12_098_949_302, 361_203_875, t_pool)
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
-      [am_out(12_088_900_448, 361_203_875, new_d), crea(46_281_474)],
+      [am_out(12_098_949_302, 361_203_875, new_d), crea(46_180_985)],
     )
   spend_pool(d, AmmSell { min_out: 4_567_481_522 }, tx)
 }
@@ -4592,10 +4591,10 @@ test amm_sell_rejects_the_pool_paying_its_own_platform_fee() fail {
 /// `==`, so a future cohort may RAISE them and still sell. Without this the four
 /// rejects above would also be satisfied by a mutation that turned the floors into
 /// equalities, which would silently freeze every future cohort out of the sell side.
-///   platform_fee_bps 100, flat 2,500,000 on gross 4,628,147,438
-///   ⇒ 4,628,147,438 × 100/10,000 + 2,500,000 = 46,281,474 + 2,500,000 = 48,781,474
-///   creator unchanged at 100 bps = 46,281,474
-///   net = 4,628,147,438 − 46,281,474 − 48,781,474 = 4,533,084,490
+///   platform_fee_bps 100, flat 2,500,000 on gross 4,618,098,584
+///   ⇒ 4,618,098,584 × 100/10,000 + 2,500,000 = 46,180,985 + 2,500,000 = 48,680,985
+///   creator unchanged at 100 bps = 46,180,985
+///   net = 4,618,098,584 − 46,180,985 − 48,680,985 = 4,523,236,614
 test amm_sell_accepts_a_future_cohort_that_raises_the_platform_fee() {
   let d =
     dat(t_policy, t_name, ga, gt, t_creator, t_treasury, 100, 100, 2_500_000, t_royalty, Amm)
@@ -4603,7 +4602,7 @@ test amm_sell_accepts_a_future_cohort_that_raises_the_platform_fee() {
     dat(
       t_policy,
       t_name,
-      12_088_900_448,
+      12_098_949_302,
       361_203_875,
       t_creator,
       t_treasury,
@@ -4617,12 +4616,12 @@ test amm_sell_accepts_a_future_cohort_that_raises_the_platform_fee() {
     base_tx(
       [am_in(ga, gt, d)],
       [
-        am_out(12_088_900_448, 361_203_875, new_d),
-        plat(48_781_474),
-        crea(46_281_474),
+        am_out(12_098_949_302, 361_203_875, new_d),
+        plat(48_680_985),
+        crea(46_180_985),
       ],
     )
-  spend_pool(d, AmmSell { min_out: 4_533_084_490 }, tx)
+  spend_pool(d, AmmSell { min_out: 4_523_236_614 }, tx)
 }
 
 /// ██ `authentic`, THROUGH AmmSell. ██
@@ -4646,9 +4645,9 @@ test amm_sell_rejects_a_decoy_input_without_the_nft() fail {
     base_tx(
       [no_nft],
       [
-        am_out(12_088_900_448, 361_203_875, as_new()),
+        am_out(12_098_949_302, 361_203_875, as_new()),
         plat(2_000_000),
-        crea(46_281_474),
+        crea(46_180_985),
       ],
     ),
   )
@@ -4665,9 +4664,9 @@ fn amm_sell_with_new_datum(new_d: PoolDatum) -> Transaction {
   base_tx(
     [am_in(ga, gt, ab_old())],
     [
-      am_out(12_088_900_448, 361_203_875, new_d),
+      am_out(12_098_949_302, 361_203_875, new_d),
       plat(2_000_000),
-      crea(46_281_474),
+      crea(46_180_985),
     ],
   )
 }
@@ -4676,7 +4675,7 @@ test r5_amm_sell_rejects_rewriting_the_creator_pkh() fail {
   spend_pool(
     ab_old(),
     AmmSell { min_out: 4_567_481_522 },
-    amm_sell_with_new_datum(am_creator(12_088_900_448, 361_203_875, t_owner)),
+    amm_sell_with_new_datum(am_creator(12_098_949_302, 361_203_875, t_owner)),
   )
 }
 
@@ -4686,7 +4685,7 @@ test r5_amm_sell_rejects_rewriting_the_policy_id() fail {
     AmmSell { min_out: 4_567_481_522 },
     amm_sell_with_new_datum(
       am_policy(
-        12_088_900_448,
+        12_098_949_302,
         361_203_875,
         #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       ),
@@ -4699,7 +4698,7 @@ test r5_amm_sell_rejects_rewriting_the_asset_name() fail {
     ab_old(),
     AmmSell { min_out: 4_567_481_522 },
     amm_sell_with_new_datum(
-      am_name(12_088_900_448, 361_203_875, #"4841434b"),
+      am_name(12_098_949_302, 361_203_875, #"4841434b"),
     ),
   )
 }
@@ -4708,7 +4707,7 @@ test r5_amm_sell_rejects_zeroing_the_creator_fee_bps() fail {
   spend_pool(
     ab_old(),
     AmmSell { min_out: 4_567_481_522 },
-    amm_sell_with_new_datum(am_cbps(12_088_900_448, 361_203_875, 0)),
+    amm_sell_with_new_datum(am_cbps(12_098_949_302, 361_203_875, 0)),
   )
 }
 
@@ -4718,7 +4717,7 @@ test r5_amm_sell_rejects_rewriting_the_platform_fee_bps() fail {
   spend_pool(
     ab_old(),
     AmmSell { min_out: 4_567_481_522 },
-    amm_sell_with_new_datum(am_pbps(12_088_900_448, 361_203_875, 50)),
+    amm_sell_with_new_datum(am_pbps(12_098_949_302, 361_203_875, 50)),
   )
 }
 
@@ -4726,58 +4725,51 @@ test r5_amm_sell_rejects_zeroing_the_platform_fee_flat() fail {
   spend_pool(
     ab_old(),
     AmmSell { min_out: 4_567_481_522 },
-    amm_sell_with_new_datum(am_pflat(12_088_900_448, 361_203_875, 0)),
+    amm_sell_with_new_datum(am_pflat(12_098_949_302, 361_203_875, 0)),
   )
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AMM SOLVENCY — the two `solvency_ok` guards, bound as MATCHED PAIRS.
+// AMM SOLVENCY — ██ THE TWO `solvency_ok` GUARDS ARE STRUCTURALLY SHADOWED
+// AS OF v3.2, AND THE TESTS BELOW DOCUMENT THAT RATHER THAN PRETEND COVERAGE. ██
 //
-// Neither is independently isolable through the branch, and saying so is better
-// than implying coverage: a continuation with a zero reserve LOSES A VALUE ENTRY
-// rather than carrying a zero, because `assets.add(_, _, 0)` is a stdlib no-op and
-// `from_lovelace(0)` is `zero`. So `value_shape_ok`'s `length == 3` fires
-// alongside. `mutverify.sh` neuters BOTH and shows the state is then accepted.
+// Pre-v3.2, a SELF-SEEDED pool graduated at the minimum legal `ada_reserve` of
+// one lovelace (k = 261,203,875) could have its token side emptied by a 262 ADA
+// buy — the retained-reserve floor let `new_tok` reach 0 — and `solvency_ok` +
+// `value_shape_ok` were the matched pair rejecting it.
 //
-// The states below are unreachable on a genuine pool — spending the entire ADA
-// supply leaves 97 tokens, and dumping the entire float leaves 4,366 ADA
-// (`math_v3.amm_buy_cannot_empty_the_token_side`,
-// `math_v3.amm_sell_of_the_whole_float_leaves_4366_ada`) — and reachable on a
-// SELF-SEEDED pool graduated at the minimum legal `ada_reserve` of one lovelace,
-// where k = 1 × 261,203,875 = 261,203,875 and 262 ADA empties the token side.
+// v3.2 floors the amount OUT: `tokens_out = ⌊net·T/(A+net)⌋ < T` for EVERY
+// input at EVERY state, and `gross = ⌊net·A/(T+net)⌋ < A` likewise. Measured at
+// the worst case below: spending the ENTIRE ADA SUPPLY into the (1, 261,203,875)
+// pool leaves one token, and its single lovelace can never be extracted. So no
+// transaction that passes `correct_tokens_out`/`correct_gross` can present a
+// zero reserve, and NO fixture can make the solvency pair the rejecting guard.
+//
+// THE GUARDS STAY ANYWAY. Removing a guard because today's arithmetic shadows
+// it is how guards die — a future cohort that changes the rounding gets them
+// back for free, and they cost two comparisons. `mutverify.sh` asserts the
+// shadowing from the other side: neutering BOTH guards changes nothing
+// observable (the documenting cases below still pass under the mutation).
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// An `AmmBuy` that takes EVERY token out of a tiny-k pool.
-///   pool (1, 261,203,875) ; k = 261,203,875
-///   ada_in = 261,203,875 ⇒ new_ada = 261,203,876
-///   new_tok = 261,203,875 / 261,203,876 = 0 ⇒ tokens_out = 261,203,875 (all)
-///   creator 2,612,038 ; platform 2,000,000 (flat)
-/// The continuation would hold lovelace + NFT only — two entries.
-test amm_buy_rejects_emptying_the_token_side_of_a_tiny_pool() fail {
-  let d = pdm(1, gt)
-  let tx =
-    base_tx(
-      [am_in(1, gt, d)],
-      [
-        am_out(261_203_876, 0, pdm(261_203_876, 0)),
-        plat(2_000_000),
-        crea(2_612_038),
-      ],
-    )
-  spend_pool(d, AmmBuy { min_out: 261_203_875 }, tx)
+/// Even the ENTIRE ADA SUPPLY cannot empty a tiny-k pool's token side under the
+/// v3.2 quote — the state `solvency_ok` rejects is unpresentable via a correct
+/// quote. ⌊net·T/(A+net)⌋ with A = 1: out = 261,203,874 of 261,203,875.
+test amm_tiny_k_pool_token_side_cannot_be_emptied() {
+  let out = amm_quote_buy(1, gt, 45_000_000_000_000_000)
+  and {
+    out == 261_203_874,
+    gt - out >= 1,
+  }
 }
 
-/// An `AmmSell` that takes EVERY lovelace out of the same pool.
-///   pool (1, 261,203,875) ; tokens_in = 1 ⇒ new_tok = 261,203,876
-///   new_ada = 261,203,875 / 261,203,876 = 0 ⇒ gross = 1
-///   creator_fee(1, 100) = 0 (the documented zero-fee hatch) ; platform 2,000,000
-///   net = 1 − 0 − 2,000,000 = −1,999,999
-/// The continuation would hold the token + NFT only — two entries.
-test amm_sell_rejects_emptying_the_ada_side_of_a_tiny_pool() fail {
-  let d = pdm(1, gt)
-  let tx =
-    base_tx([am_in(1, gt, d)], [am_out(0, gt + 1, pdm(0, gt + 1)), plat(2_000_000)])
-  spend_pool(d, AmmSell { min_out: -1_999_999 }, tx)
+/// …and the single lovelace in the same pool can never be extracted: the netted
+/// gross floors to 0 at every size.
+test amm_tiny_k_pool_ada_side_cannot_be_emptied() {
+  and {
+    amm_quote_sell_gross(1, gt, 1_000_000_000) == 0,
+    amm_quote_sell_gross(1, gt, 45_000_000_000_000_000) == 0,
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4801,7 +4793,7 @@ test amm_buy_rejects_a_zero_platform_fee_self_seeded_pool() fail {
       t_policy,
       t_name,
       17_717_047_886,
-      246_460_793,
+      246_502_534,
       t_owner,
       t_owner,
       0,
@@ -4813,7 +4805,7 @@ test amm_buy_rejects_a_zero_platform_fee_self_seeded_pool() fail {
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
-      [am_out(17_717_047_886, 246_460_793, new_d), pk_out(t_owner, 2_000_000)],
+      [am_out(17_717_047_886, 246_502_534, new_d), pk_out(t_owner, 2_000_000)],
     )
   spend_pool(d, AmmBuy { min_out: 14_700_000 }, tx)
 }
@@ -4824,12 +4816,12 @@ test amm_buy_rejects_a_zero_platform_fee_self_seeded_pool() fail {
 test amm_buy_rejects_a_pool_whose_datum_names_a_foreign_treasury() fail {
   let foreign = #"7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"
   let d = am_treasury(ga, gt, foreign)
-  let new_d = am_treasury(17_717_047_886, 246_460_793, foreign)
+  let new_d = am_treasury(17_717_047_886, 246_502_534, foreign)
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
       [
-        am_out(17_717_047_886, 246_460_793, new_d),
+        am_out(17_717_047_886, 246_502_534, new_d),
         pk_out(foreign, 2_000_000),
         crea(10_000_000),
       ],
@@ -4847,7 +4839,7 @@ test amm_buy_accepts_a_future_cohort_that_raises_the_platform_fee() {
       t_policy,
       t_name,
       17_717_047_886,
-      246_460_793,
+      246_502_534,
       t_creator,
       t_treasury,
       100,
@@ -4860,7 +4852,7 @@ test amm_buy_accepts_a_future_cohort_that_raises_the_platform_fee() {
     base_tx(
       [am_in(ga, gt, d)],
       [
-        am_out(17_717_047_886, 246_460_793, new_d),
+        am_out(17_717_047_886, 246_502_534, new_d),
         plat(12_500_000),
         crea(10_000_000),
       ],
@@ -4876,11 +4868,11 @@ test amm_buy_accepts_a_future_cohort_that_raises_the_platform_fee() {
 /// entire reserve with no floor beside it, and it exists for the token's whole life.
 test amm_buy_rejects_the_pool_paying_its_own_platform_fee() fail {
   let d = am_treasury(ga, gt, t_pool)
-  let new_d = am_treasury(17_717_047_886, 246_460_793, t_pool)
+  let new_d = am_treasury(17_717_047_886, 246_502_534, t_pool)
   let tx =
     base_tx(
       [am_in(ga, gt, d)],
-      [am_out(17_717_047_886, 246_460_793, new_d), crea(10_000_000)],
+      [am_out(17_717_047_886, 246_502_534, new_d), crea(10_000_000)],
     )
   spend_pool(d, AmmBuy { min_out: 14_700_000 }, tx)
 }
@@ -4896,7 +4888,7 @@ test amm_buy_rejects_a_reserved_slot_continuation_datum() fail {
     AmmBuy { min_out: 14_700_000 },
     ab_tx_outs(
       [
-        script_out(t_pool, amm_value(17_717_047_886, 246_460_793), reserved),
+        script_out(t_pool, amm_value(17_717_047_886, 246_502_534), reserved),
         plat(2_000_000),
         crea(10_000_000),
       ],
@@ -4909,7 +4901,7 @@ test amm_buy_rejects_a_datum_hash_continuation() fail {
   let hashed =
     Output {
       address: address.from_script(t_pool),
-      value: amm_value(17_717_047_886, 246_460_793),
+      value: amm_value(17_717_047_886, 246_502_534),
       datum: DatumHash(
         #"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
       ),
@@ -5294,7 +5286,7 @@ test amm_buy_rejects_a_reference_script_on_the_continuation() fail {
   let with_ref =
     Output {
       address: address.from_script(t_pool),
-      value: amm_value(17_717_047_886, 246_460_793),
+      value: amm_value(17_717_047_886, 246_502_534),
       datum: InlineDatum(ab_new()),
       reference_script: Some(t_ref_script),
     }
@@ -5309,14 +5301,14 @@ test amm_sell_rejects_a_reference_script_on_the_continuation() fail {
   let with_ref =
     Output {
       address: address.from_script(t_pool),
-      value: amm_value(12_088_900_448, 361_203_875),
+      value: amm_value(12_098_949_302, 361_203_875),
       datum: InlineDatum(as_new()),
       reference_script: Some(t_ref_script),
     }
   let tx =
     base_tx(
       [am_in(ga, gt, ab_old())],
-      [with_ref, plat(2_000_000), crea(46_281_474)],
+      [with_ref, plat(2_000_000), crea(46_180_985)],
     )
   spend_pool(ab_old(), AmmSell { min_out: 4_567_481_522 }, tx)
 }

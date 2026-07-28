@@ -844,38 +844,26 @@ run_case "AmmSell slippage_ok removed" \
   "$SLIP_AMMSELL" validators/lump_pool.ak
 
 echo
-echo "── ██ THE TWO AMM solvency_ok GUARDS: MATCHED PAIRS, NOT ISOLATED. ██ ─────"
-echo "   assets.add(_,_,0) is a stdlib NO-OP and from_lovelace(0) is \`zero\`, so a"
-echo "   zero-reserve continuation loses a value ENTRY rather than carrying a zero."
-echo "   value_shape_ok's length == 3 therefore co-fires. Both are needed and"
-echo "   neither is independently isolable; these six cases show exactly that."
+echo "── ██ THE TWO AMM solvency_ok GUARDS: STRUCTURALLY SHADOWED AS OF v3.2. ██ ─"
+echo "   The v3.2 quotes floor the amount OUT, so tokens_out < T and gross < A at"
+echo "   EVERY state — even a self-seeded ada_reserve=1 pool cannot be emptied"
+echo "   through a correct quote, and no fixture can make the solvency pair the"
+echo "   rejecting guard. The guards STAY as defence in depth (a future cohort"
+echo "   that changes the rounding gets them back for free). These two cases"
+echo "   DOCUMENT the shadowing: neutering BOTH guards changes nothing observable"
+echo "   — if either case ever flips to FAILS, the guards became load-bearing"
+echo "   again and need real isolation cases, not this pair."
 SOLV_BUY='s/  let solvency_ok = new_tok >= 1/  let solvency_ok = True/'
 SOLV_SELL='s/  let solvency_ok = new_ada >= 1/  let solvency_ok = True/'
 VSHAPE_AMMBUY='my $i=0; s/(value_shape_ok\(own_output\.value\),)/++$i == 3 ? "True," : $1/ge'
 VSHAPE_AMMSELL='my $i=0; s/(value_shape_ok\(own_output\.value\),)/++$i == 4 ? "True," : $1/ge'
 
-run_case "  AmmBuy solvency_ok alone (value_shape_ok co-fires: PASSES)" \
-  "amm_buy_rejects_emptying_the_token_side_of_a_tiny_pool" PASSES \
-  "$SOLV_BUY" validators/lump_pool.ak
-
-run_case "  AmmBuy value_shape_ok alone (solvency_ok co-fires: PASSES)" \
-  "amm_buy_rejects_emptying_the_token_side_of_a_tiny_pool" PASSES \
-  "$VSHAPE_AMMBUY" validators/lump_pool.ak
-
-run_case "  BOTH removed — every token is bought out of a tiny-k pool" \
-  "amm_buy_rejects_emptying_the_token_side_of_a_tiny_pool" FAILS \
+run_case "  AmmBuy solvency pair removed — SHADOWED by the v3.2 quote (documents)" \
+  "amm_tiny_k_pool_token_side_cannot_be_emptied" PASSES \
   "$SOLV_BUY; $VSHAPE_AMMBUY" validators/lump_pool.ak
 
-run_case "  AmmSell solvency_ok alone (value_shape_ok co-fires: PASSES)" \
-  "amm_sell_rejects_emptying_the_ada_side_of_a_tiny_pool" PASSES \
-  "$SOLV_SELL" validators/lump_pool.ak
-
-run_case "  AmmSell value_shape_ok alone (solvency_ok co-fires: PASSES)" \
-  "amm_sell_rejects_emptying_the_ada_side_of_a_tiny_pool" PASSES \
-  "$VSHAPE_AMMSELL" validators/lump_pool.ak
-
-run_case "  BOTH removed — every lovelace is sold out of a tiny-k pool" \
-  "amm_sell_rejects_emptying_the_ada_side_of_a_tiny_pool" FAILS \
+run_case "  AmmSell solvency pair removed — SHADOWED by the v3.2 quote (documents)" \
+  "amm_tiny_k_pool_ada_side_cannot_be_emptied" PASSES \
   "$SOLV_SELL; $VSHAPE_AMMSELL" validators/lump_pool.ak
 
 echo
@@ -1052,13 +1040,39 @@ echo "   'Reuse quote_buy for the AMM' is the obvious simplification and it is t
 echo "   whole defect: the offset is what makes the two halves price differently."
 run_case "amm_quote_buy given virtual_ada_v3 — the AMM prices like the curve" \
   "amm_buy_" FAILS \
-  's/  let k = ada_reserve \* token_reserve\r?\n  let new_ada_reserve = ada_reserve \+ ada_in/  let k = ( ada_reserve + virtual_ada_v3 ) * token_reserve\n  let new_ada_reserve = ada_reserve + virtual_ada_v3 + ada_in/' \
+  's/  ada_in_net \* token_reserve \/ \( ada_reserve \+ ada_in_net \)/  ada_in_net * token_reserve \/ ( ada_reserve + virtual_ada_v3 + ada_in_net )/' \
   lib/lumpfun/math_v3.ak
 
 run_case "amm_quote_sell_gross given virtual_ada_v3" \
   "amm_sell_" FAILS \
-  's/  let k = ada_reserve \* token_reserve\r?\n  let new_token_reserve = token_reserve \+ tokens_in/  let k = ( ada_reserve + virtual_ada_v3 ) * token_reserve\n  let new_token_reserve = token_reserve + tokens_in/' \
+  's/  let gross = tokens_in_net \* ada_reserve \/ \( token_reserve \+ tokens_in_net \)/  let gross = tokens_in_net * ( ada_reserve + virtual_ada_v3 ) \/ ( token_reserve + tokens_in_net )/' \
   lib/lumpfun/math_v3.ak
+
+echo
+echo "── ██ v3.2: THE LP FEE MUST BE BOUND, PER QUOTE, PER CONSTANT. ██ ─────────"
+echo "   'Drop the netting' is the one-line simplification that silently refunds"
+echo "   the 0.30% to the trader and stops the pool growing; zeroing the constant"
+echo "   is the same defect via params_v3. Each must be killed INDEPENDENTLY —"
+echo "   a shared kill would let a refactor drop one side's netting unseen."
+run_case "amm_quote_buy netting dropped — the buy prices the FULL input" \
+  "amm_buy_" FAILS \
+  's/  let ada_in_net = ada_in \* \( 10_000 - amm_lp_fee_bps_v3 \) \/ 10_000/  let ada_in_net = ada_in/' \
+  lib/lumpfun/math_v3.ak
+
+run_case "amm_quote_sell_gross netting dropped — the sell prices the FULL input" \
+  "amm_sell_" FAILS \
+  's/  let tokens_in_net = tokens_in \* \( 10_000 - amm_lp_fee_bps_v3 \) \/ 10_000/  let tokens_in_net = tokens_in/' \
+  lib/lumpfun/math_v3.ak
+
+run_case "amm_lp_fee_bps_v3 zeroed in params — every AMM vector moves" \
+  "amm_buy_" FAILS \
+  's/pub const amm_lp_fee_bps_v3: Int = 30/pub const amm_lp_fee_bps_v3: Int = 0/' \
+  lib/lumpfun/params_v3.ak
+
+run_case "amm_lp_fee_bps_v3 zeroed — the k-direction test is bound to the fee" \
+  "amm_buy_k_strictly_increases" FAILS \
+  's/pub const amm_lp_fee_bps_v3: Int = 30/pub const amm_lp_fee_bps_v3: Int = 0/' \
+  lib/lumpfun/params_v3.ak
 
 echo
 echo "── ██ THE DEPTH STEP AT THE FLIP IS MEASURED, NOT ASSUMED. ██ ─────────────"
@@ -1071,12 +1085,12 @@ echo "   Giving the AMM the curve's offset collapses the step to zero, which the
 echo "   strict inequalities must catch:"
 run_case "amm_quote_buy given the curve's offset — the depth step vanishes" \
   "amm_depth_step_by_trade_size" FAILS \
-  's/  let k = ada_reserve \* token_reserve\r?\n  let new_ada_reserve = ada_reserve \+ ada_in/  let k = ( ada_reserve + virtual_ada_v3 ) * token_reserve\n  let new_ada_reserve = ada_reserve + virtual_ada_v3 + ada_in/' \
+  's/  ada_in_net \* token_reserve \/ \( ada_reserve \+ ada_in_net \)/  ada_in_net * token_reserve \/ ( ada_reserve + virtual_ada_v3 + ada_in_net )/' \
   lib/lumpfun/math_v3.ak
 
 run_case "amm_quote_sell_gross given the curve's offset — the sell-side step vanishes" \
   "amm_depth_step_on_the_sell_side" FAILS \
-  's/  let k = ada_reserve \* token_reserve\r?\n  let new_token_reserve = token_reserve \+ tokens_in/  let k = ( ada_reserve + virtual_ada_v3 ) * token_reserve\n  let new_token_reserve = token_reserve + tokens_in/' \
+  's/  let gross = tokens_in_net \* ada_reserve \/ \( token_reserve \+ tokens_in_net \)/  let gross = tokens_in_net * ( ada_reserve + virtual_ada_v3 ) \/ ( token_reserve + tokens_in_net )/' \
   lib/lumpfun/math_v3.ak
 
 echo "   ...and the k RATIO is a fact about the CONSTANTS, so moving the pool bag"
@@ -1089,7 +1103,7 @@ run_case "pool_bag_v3 off by one — the depth-step k ratio moves" \
   lib/lumpfun/params_v3.ak
 
 run_case "pool_bag_v3 off by one — the locked-fraction identity moves too" \
-  "amm_sell_of_the_whole_float_leaves_4366_ada" FAILS \
+  "amm_sell_of_the_whole_float_leaves_4376_ada" FAILS \
   's/pub const pool_bag_v3: Int = 261_203_875/pub const pool_bag_v3: Int = 261_203_876/' \
   lib/lumpfun/params_v3.ak
 

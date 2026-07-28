@@ -186,8 +186,26 @@ pub const creator_fee_bps_v3: Int = 100
 pub const platform_fee_bps_v3: Int = 0
 
 /// 2 ADA flat per trade to LumpFun. The whole platform fee. Matches what v2
-/// charges, which is the number users already understand.
+/// charges, which is the number users already understand. Operator decision,
+/// 2026-07-27: stays 2 ADA flat for the v3.2 cohort.
 pub const platform_fee_flat_v3: Int = 2_000_000
+
+/// ── ██ v3.2: THE LP FEE. RETAINED IN THE POOL, PAID TO NOBODY. ██ ────────────
+/// Uniswap-V2-style 0.30% fee on AMM trades only, retained IN the pool
+/// reserves. This pool has no LP tokens and no withdraw redeemer, so the fee is
+/// not income to anyone — it is PERMANENT liquidity deepening: k strictly grows
+/// with every AMM trade and slippage decays with cumulative volume, which
+/// progressively heals the ÷2.393 depth step disclosed at graduation.
+///
+/// AMM-ONLY, deliberately. Retaining a fee during Bootstrap raises the ADA at
+/// curve close to ceil(A/0.997) (+50.3 ADA) without changing the token path, so
+/// the AMM would open +0.106% ABOVE the curve close — breaking the zero-gap
+/// graduation calibration that is this design's headline property. Bootstrap
+/// quotes are untouched (§4.2 of the v3.2 plan).
+///
+/// This constant is compiled into the quote functions, so changing it is a new
+/// cohort — both script hashes and every future policy id move with it.
+pub const amm_lp_fee_bps_v3: Int = 30
 
 /// ══════════════════════════════════════════════════════════════════════════════
 /// ██  `min_trade_ada_v3` IS DELETED. THERE IS NO MINIMUM TRADE.  ██

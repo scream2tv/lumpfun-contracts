@@ -26,6 +26,31 @@ Fees (1% to the creator, 2 ADA flat to the platform) are pinned by the minting
 policy at genesis and frozen by the validator on every subsequent spend — they
 are compiled constants, not datum fields a launcher can choose.
 
+### The LP fee (v3.2)
+
+AMM trades additionally retain **0.30% in the pool reserves**. It is paid to no
+address: the quote prices the *net* input and floors the amount out (the
+Uniswap-V2 convention) while the full input still enters the reserve, so the
+fee accrues in the input-side asset and **k strictly grows on every AMM trade**.
+
+Because this pool has no LP tokens and no withdraw redeemer, that is not income
+to anyone — it is permanent liquidity deepening. Slippage decays with cumulative
+volume, which progressively heals the depth step at graduation.
+
+The fee is **AMM-only by design**. Retaining it during Bootstrap would raise the
+ADA at curve close without changing the token path, opening the AMM ~0.106%
+*above* the curve close and destroying the zero-gap property above.
+
+Measured on mainnet across two trades on a rehearsal pool (an AmmBuy then an
+AmmSell): k went 130,601,850,371,278 → 130,637,494,870,668 → 130,895,991,417,519,
+i.e. **+0.2252% of permanent depth**. Under earlier cohorts that quantity
+*decreased* on every trade.
+
+**Cohorts before v3.2 have no LP fee, and cannot gain one.** Graduation flips a
+pool in place under the script it launched with, and the fee is compiled into
+that script's hash — so a token launched under v3.0/v3.1 keeps the fee-out AMM
+for life. That is a deliberate consequence of never migrating a live pool.
+
 ## Structure
 
 ```
@@ -45,28 +70,44 @@ plutus.json                   the committed blueprint (CI artifact of `aiken bui
 
 ## Deployed script hashes (mainnet)
 
-| Cohort | Validator | blake2b-224 script hash |
-| --- | --- | --- |
-| **v3.1** (current — this source) | `lump_pool.lump_pool_v3.spend` | `e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e` |
-| **v3.1** (current — this source) | `minting_policy.lump_mint_v3.mint` (unapplied) | `f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd` |
-| v3.0 (frozen) | `minting_policy.lump_mint_v3.mint` (unapplied) | `a3a5e6a64460c2690ff8e2276e49242e0f12f6255bdc6667a92adb31` |
+**A cohort is the `(mint bytes, pool hash)` PAIR**, not either hash alone — see
+the v3.1 → v3.2 row below for why.
 
-The pool validator is **unparameterised**, so every v3 pool for every token
-lives at the one shared address derived from the pool hash:
+| Cohort | `lump_pool_v3.spend` | `lump_mint_v3.mint` (unapplied) | AMM LP fee |
+| --- | --- | --- | --- |
+| **v3.2** (current — this source) | `b8a5c48146a104e1f20796aa63582d0eef3e79243388be40ed3f00d3` | `f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd` | **0.30%** |
+| v3.1 (frozen) | `e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e` | `f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd` | none |
+| v3.0 (frozen) | `e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e` | `a3a5e6a64460c2690ff8e2276e49242e0f12f6255bdc6667a92adb31` | none |
+
+The pool validator is **unparameterised**, so every pool of a given cohort lives
+at the one shared address derived from that cohort's pool hash:
 
 ```
-addr1w85psfdmtu9hsnssszjfq0hqguhe69ywq7rpm2pldthwlrs8pqvl0
+v3.2   addr1wxu2t3ypg6ssfc0jq7t25c6c958w70neysec30jqa5lsp5cscheg2
+v3.1   addr1w85psfdmtu9hsnssszjfq0hqguhe69ywq7rpm2pldthwlrs8pqvl0
+v3.0   addr1w85psfdmtu9hsnssszjfq0hqguhe69ywq7rpm2pldthwlrs8pqvl0
 ```
 
-v3.0 and v3.1 share **byte-identical pool bytes** — the cohorts differ only in
-the minting policy (v3.1 allows the creator's first buy in the launch
-transaction itself). Tokens launched under v3.0 keep trading through exactly the
-bytes they launched under; a cohort bump costs future policy ids, nothing else.
+Two things the table above makes visible, and both matter when verifying a token:
+
+- **v3.0 and v3.1 share byte-identical pool bytes** and differ only in the
+  minting policy (v3.1 allows the creator's first buy in the launch transaction
+  itself), so they sit at the same address.
+- **v3.1 and v3.2 share byte-identical unapplied MINT bytes** and differ only in
+  the pool — `minting_policy.ak` imports none of the AMM arithmetic, so adding
+  the LP fee left it untouched. Every applied policy id still differs, because
+  the pool hash is one of the mint's parameters. Identifying a cohort by mint
+  bytes alone would collapse these two and mis-derive every policy id in one of
+  them.
+
+Tokens keep trading through exactly the bytes they launched under, forever; a
+cohort bump costs future policy ids and nothing else.
 
 A token's **policy id** is not the unapplied mint hash: it is the mint validator
 applied to `(one_shot_utxo, pool_script_hash)` — the token's seed
-`OutputReference` and the pool hash above, in that order — then hashed. Applying
-the parameters in the wrong order yields a valid-looking but wrong policy id.
+`OutputReference` and its cohort's pool hash, in that order — then hashed.
+Applying the parameters in the wrong order yields a valid-looking but wrong
+policy id.
 
 ## Building and verifying
 
@@ -87,12 +128,18 @@ compiler run that produced the bytes, so agreeing with it alone proves nothing.
 To verify a specific token, apply the mint parameters yourself:
 
 1. Take the token's seed `OutputReference` (the UTxO consumed at launch).
-2. Apply `(seed, e81825bb…)` to the unapplied `lump_mint_v3` CBOR from
-   `plutus.json`.
+2. Apply `(seed, <pool hash>)` to the unapplied `lump_mint_v3` CBOR from
+   `plutus.json`, trying each cohort's pool hash from the table above. The one
+   that reproduces the token's known policy id **is** its cohort — that is how
+   you learn which contracts a given token actually runs, and therefore whether
+   it charges the LP fee.
 3. `blake2b-224(0x03 ‖ appliedCbor)` is the token's policy id. The pool NFT is
    that policy id with asset name `000643b0504f4f4c` (CIP-67 label 100 +
-   `"POOL"`), and the authentic pool is the UTxO at the shared address holding
-   that NFT.
+   `"POOL"`), and the authentic pool is the UTxO at that cohort's address
+   holding that NFT.
+
+If no cohort reproduces the policy id, stop — do not guess one. A mismatch means
+the record you were handed disagrees with the chain.
 
 Do **not** identify a pool as "the UTxO at the pool address holding token X" —
 the address is shared, so anyone can seat a decoy UTxO there. Authenticate by
@@ -113,6 +160,7 @@ this rule.
 | `creator_fee_bps_v3` | 100 (1%, every trade, both phases, forever) |
 | `platform_fee_bps_v3` | 0 |
 | `platform_fee_flat_v3` | 2,000,000 lovelace per trade |
+| `amm_lp_fee_bps_v3` | 30 (0.30%, **AMM trades only**, retained in the pool — v3.2+) |
 
 Launch FDV is 8,000 ADA; the curve completes at 64,000 ADA FDV with roughly
 16,717 ADA raised, all of which is locked in the pool at graduation.
@@ -129,6 +177,18 @@ NFTs, fee omissions, datum lies, reference-script welding, cross-mode quoting,
 zero-value no-ops), and the mutation harness exists because a test suite that
 cannot detect a mutated validator proves nothing about the real one.
 
+At the pinned v3.2 bytes: **672 checks pass, 0 fail**, and mutation
+verification reports **0 problems** — including cases that specifically bind
+the LP fee (dropping the fee netting from either quote, or zeroing
+`amm_lp_fee_bps_v3`, must be caught by the suite).
+
+Two guards are documented as **structurally shadowed** rather than claimed as
+covered: the AMM `solvency_ok` pair cannot be isolated by any fixture, because
+flooring the amount out means `tokens_out < token_reserve` and `gross <
+ada_reserve` at every reachable state. They are kept as defence in depth
+against a future rounding change, and the mutation harness asserts the
+shadowing rather than pretending otherwise.
+
 ## Security model, briefly
 
 - **One-shot supply.** The only mint redeemer requires consuming the seed UTxO,
@@ -140,17 +200,20 @@ cannot detect a mutated validator proves nothing about the real one.
   pool was bought on the curve at the same quote anyone gets.
 - **Nothing is trusted from a datum or redeemer** where the UTxO's address and
   value can prove it. Quotes are recomputed on chain.
-- **No withdraw path.** Graduated liquidity is locked in the pool forever.
+- **No withdraw path.** Graduated liquidity is locked in the pool forever, and
+  from v3.2 it only grows: the LP fee is retained by the quote arithmetic, so
+  k strictly increases on every AMM trade.
 - **Fees are compiled in.** A different fee schedule is a different script hash
-  — visibly a different protocol.
+  — visibly a different protocol. That is also why a live pool can never gain
+  the LP fee retroactively.
 
 ## Audit status
 
 These contracts have **not** received a third-party audit. They have been
-through repeated internal adversarial review, a mutation-tested suite, and full
-lifecycle rehearsals on mainnet (launch → trade → graduate → AMM trade) before
-public launch. Read the source and judge for yourself — that is what this
-repository is for.
+through repeated internal adversarial review, a mutation-tested suite, real-node
+Plutus VM evaluation, and full lifecycle rehearsals on mainnet (launch → trade →
+graduate → AMM trade → claim) before each cohort shipped. Read the source and
+judge for yourself — that is what this repository is for.
 
 ## License
 

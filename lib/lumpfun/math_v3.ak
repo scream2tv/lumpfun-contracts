@@ -29,7 +29,7 @@
 // EVERY quantity in this module is RESERVE-SIDE. `ada_in` is the lovelace that
 // actually reaches `ada_reserve`, NOT the trader's total outlay: on a Buy or an
 // AmmBuy both fees are a SURCHARGE on top of it, so the user spends
-// `ada_in × 1.0130 + 500,000` (see fees_v3's header for the full asymmetry —
+// `ada_in × 1.01 + 2,000,000` (see fees_v3's header for the full asymmetry —
 // the sell sides are the other way round and deduct from the gross).
 //
 // This matters most on the CLOSING BUY, where `ada_in` is fixed by the curve to a
@@ -40,11 +40,11 @@
 //              − effective        where effective = ada_reserve + virtual_ada_v3
 //
 // — and must NOT derive it from the user's entered spend. A quote that computes
-// `ada_in = spend / 1.013 − flat` misses the window and the transaction fails
+// `ada_in = spend / 1.01 − flat` misses the window and the transaction fails
 // with an opaque script error, which is the exact symptom §8.1 warns about.
-// (The AMM has no closing window and no exemption: `min_trade_ada_v3` binds
-// unconditionally on `AmmBuy`, so back-solving is merely imprecise there, not
-// fatal.)
+// (The AMM has no closing window, so back-solving is merely imprecise there,
+// not fatal — and as of v3.2 the AMM quotes additionally net the 0.30% LP fee
+// off the input before pricing, which any mirror must reproduce exactly.)
 //
 // GOLDEN VECTOR for web/ to test against, one worked closing buy:
 //   state      ada_reserve = 16,712,047,886   token_reserve = 404,139,159
@@ -52,13 +52,13 @@
 //   ada_in     = 4,999,994  (the SMALLEST closing buy; the window runs to
 //                            5,000,057, all landing on 404,061,018)
 //   tokens_out = 78,141
-//   fees       creator 39,999 ; platform 24,999 + 500,000 = 524,999
-//   user spend = 4,999,994 + 39,999 + 524,999 = 5,564,992 lovelace
+//   fees       creator 49,999 ; platform 2,000,000 (flat; bps is 0)
+//   user spend = 4,999,994 + 49,999 + 2,000,000 = 7,049,993 lovelace
 // ══════════════════════════════════════════════════════════════════════════════
 
 use lumpfun/params_v3.{
-  curve_exhausted_token_reserve, pool_bag_v3, sellable_v3, token_offset_v3,
-  total_supply_v3, virtual_ada_v3, virtual_token_v3,
+  amm_lp_fee_bps_v3, curve_exhausted_token_reserve, pool_bag_v3, sellable_v3,
+  token_offset_v3, total_supply_v3, virtual_ada_v3, virtual_token_v3,
 }
 
 /// The REAL token balance a BOOTSTRAP pool UTxO must hold for a given VIRTUAL
@@ -77,7 +77,7 @@ pub fn real_tokens(token_reserve: Int) -> Int {
 /// solution, the BUYER receives up to one token MORE, and k therefore weakly
 /// DECREASES across a direct buy. Measured at v3 genesis, a single 10 ADA buy
 /// moves k by −6,349,998,440 (relative error < 1e-9; the buyer's maximum gain is
-/// one token against a 0.50 ADA flat fee, so it is not grindable).
+/// one token against a 2 ADA flat fee, so it is not grindable).
 ///
 /// contracts/cardano/lib/lumpfun/math.ak:19 claims the opposite ("buyers get
 /// slightly fewer tokens — keeps k non-decreasing"). That comment is WRONG and
@@ -86,8 +86,9 @@ pub fn real_tokens(token_reserve: Int) -> Int {
 ///
 /// Consequence for anyone writing a property test: DO NOT assert that k is
 /// non-decreasing on the direct buy path — it will fail against correct code.
-/// If you assert anything about k on that path, assert NON-INCREASING. The SAME
-/// applies to `amm_quote_buy` below, which has the identical rounding.
+/// If you assert anything about k on that path, assert NON-INCREASING. As of
+/// v3.2 this is CURVE-ONLY doctrine: `amm_quote_buy` below floors the amount
+/// OUT and retains a 0.30% LP fee, so on the AMM paths k strictly INCREASES.
 pub fn quote_buy(ada_reserve: Int, token_reserve: Int, ada_in: Int) -> Int {
   let effective = ada_reserve + virtual_ada_v3
   let k = effective * token_reserve
@@ -120,9 +121,9 @@ pub fn quote_buy(ada_reserve: Int, token_reserve: Int, ada_in: Int) -> Int {
 /// `sell_round_trip_leak_near_the_close_is_64_lovelace`.
 ///
 /// Not exploitable at the current schedule: ~64 lovelace extracted against a
-/// mandatory ≥1.13 ADA of fees (0.50 flat each way + 1.30% each way on a ≥10 ADA
-/// buy) is a 17,000:1 loss. But price any future relaxation — dropping the flat
-/// fee, lowering `min_trade_ada_v3` — against 64, not against 1.
+/// mandatory ≥4.2 ADA of fees (2 ADA flat each way + 1% each way on a 10 ADA
+/// buy) is a ~65,000:1 loss. But price any future relaxation — dropping the
+/// flat fee — against 64, not against 1.
 pub fn quote_sell_gross(
   ada_reserve: Int,
   token_reserve: Int,
@@ -168,47 +169,49 @@ pub fn amm_k(ada_reserve: Int, token_reserve: Int) -> Int {
 
 /// Tokens out for `ada_in` lovelace in the permanent AMM.
 ///
-/// Identical rounding to `quote_buy` (floor on the RETAINED token reserve), so
-/// the same warning applies: k weakly DECREASES on a buy, and a
-/// "k is non-decreasing" property test fails against correct code.
+/// ── v3.2: THE 0.30% LP FEE, AND A ROUNDING DIRECTION THAT DIFFERS FROM THE ──
+/// ── CURVE'S. READ BOTH OR YOUR PROPERTY TEST WILL BE WRONG EITHER WAY.     ──
 ///
-/// ── THE POOL CANNOT BE EMPTIED OF TOKENS. ────────────────────────────────────
-/// `new_token_reserve = k / (ada_reserve + ada_in)` is 0 only when
-/// `ada_in > k − ada_reserve`. At the canonical graduated state
-/// k = 16,717,047,886 × 261,203,875 = 4,366,557,686,383,758,250 lovelace-tokens,
-/// so reaching zero needs ~4.37e18 lovelace = ~4.37 TRILLION ADA against a total
-/// ADA supply of 45e9. Spending the ENTIRE ADA supply (4.5e16 lovelace) leaves 97
-/// tokens — pinned by `amm_buy_cannot_empty_the_token_side`. The validator asserts
-/// `new_tok >= 1` anyway, because a self-seeded pool graduated with
-/// `ada_reserve = 1` has k = 261,203,875 and the bound does not hold there.
+/// Uniswap-V2 convention: the quote prices the NET input (`ada_in` less
+/// `amm_lp_fee_bps_v3`) and FLOORS THE AMOUNT OUT — pool-favouring. The datum
+/// delta is unchanged: the FULL `ada_in` still enters `ada_reserve`, so the
+/// 0.30% accrues in the input-side asset and k STRICTLY GROWS on every AMM buy.
+/// This is the opposite of `quote_buy` above, where the floor lands on the
+/// retained reserve and k weakly DECREASES. A property test on the AMM paths
+/// must assert k NON-DECREASING; on the curve paths, NON-INCREASING.
+///
+/// ── THE POOL CANNOT BE EMPTIED OF TOKENS — now structurally. ─────────────────
+/// `tokens_out = ⌊net·T / (A + net)⌋` and `net·T < (A + net)·T` always, so
+/// `tokens_out < token_reserve` for every input. The validator asserts
+/// `new_tok >= 1` anyway, as defence in depth for degenerate self-seeded pools.
 pub fn amm_quote_buy(ada_reserve: Int, token_reserve: Int, ada_in: Int) -> Int {
-  let k = ada_reserve * token_reserve
-  let new_ada_reserve = ada_reserve + ada_in
-  let new_token_reserve = k / new_ada_reserve
-  token_reserve - new_token_reserve
+  let ada_in_net = ada_in * ( 10_000 - amm_lp_fee_bps_v3 ) / 10_000
+  ada_in_net * token_reserve / ( ada_reserve + ada_in_net )
 }
 
-/// Gross ADA out for `tokens_in` in the permanent AMM, before fees.
+/// Gross ADA out for `tokens_in` in the permanent AMM, before the creator and
+/// platform fees are deducted.
 ///
-/// Capped at `ada_reserve` for the same solvency reason as the curve version.
+/// v3.2: same Uniswap-V2 convention as `amm_quote_buy` — the quote prices the
+/// NET `tokens_in` (less `amm_lp_fee_bps_v3`) and floors the ADA out. The datum
+/// delta keeps the FULL `tokens_in` entering `token_reserve`, so the 0.30%
+/// accrues on the token side and k strictly grows on sells too.
 ///
-/// ── THE POOL CANNOT BE EMPTIED OF ADA EITHER. ────────────────────────────────
-/// The largest possible `tokens_in` is the entire float outside the pool. At
-/// graduation that is `sellable_v3` = 738,796,125 against `pool_bag_v3` in the
-/// pool, so `new_token_reserve` maxes out at `total_supply_v3` = 1e9 and
-/// `new_ada_reserve = k / 1e9 = 4,366,557,686` lovelace — the pool still holds
-/// 4,366 ADA after 100% of the float is dumped into it. Pinned by
-/// `amm_sell_of_the_whole_float_leaves_4366_ada`. The validator asserts
-/// `new_ada >= 1` anyway, for self-seeded pools where k is tiny.
+/// ── THE POOL CANNOT BE EMPTIED OF ADA — now structurally. ────────────────────
+/// `gross = ⌊net·A / (T + net)⌋ < ada_reserve` for every input, so the
+/// historical solvency cap below is unreachable; it is KEPT as defence in depth
+/// (it cost nothing and removing guards to prove a point is how guards die).
+/// The locked ADA floor after the whole float is dumped RISES with cumulative
+/// volume now — pinned as a `>=` bound by `amm_sell_of_the_whole_float…`. The
+/// validator asserts `new_ada >= 1` anyway, for self-seeded pools where k is
+/// tiny.
 pub fn amm_quote_sell_gross(
   ada_reserve: Int,
   token_reserve: Int,
   tokens_in: Int,
 ) -> Int {
-  let k = ada_reserve * token_reserve
-  let new_token_reserve = token_reserve + tokens_in
-  let new_ada_reserve = k / new_token_reserve
-  let gross = ada_reserve - new_ada_reserve
+  let tokens_in_net = tokens_in * ( 10_000 - amm_lp_fee_bps_v3 ) / 10_000
+  let gross = tokens_in_net * ada_reserve / ( token_reserve + tokens_in_net )
   if gross > ada_reserve {
     ada_reserve
   } else {
@@ -678,12 +681,12 @@ test amm_open_price_gap_stays_tiny_after_a_hundred_trades() {
 /// cap swallows it (`sell_full_round_trip_hits_the_cap`).
 ///
 /// THE REAL BOUND IS ECONOMIC, AND IT IS THE ONE TO QUOTE. Each 10 ADA round trip
-/// pays 1.26 ADA of MANDATORY fees (0.50 flat each way + 1.30% each way) to move A by
-/// 28–64 lovelace. So 1 ADA of A costs roughly 19,700–45,000 ADA of fees, paid to the
-/// creator and to LumpFun, and the payoff is moving the graduated pool's opening
+/// pays ~4.2 ADA of MANDATORY fees (2 ADA flat each way + 1% each way) to move A by
+/// 28–64 lovelace. So 1 ADA of A costs roughly 65,600–150,000 ADA of fees, paid to
+/// the creator and to LumpFun, and the payoff is moving the graduated pool's opening
 /// price by ~0.006% in the FIRST BUYER's favour. Breaking the 1e-5 bound asserted
 /// here needs A about 472,821 lovelace below the zero-gap point — 7,400–16,900 round
-/// trips, 9,300–21,300 ADA of fees — so the assertion is exceedable FOR MONEY by an
+/// trips, 31,100–71,000 ADA of fees — so the assertion is exceedable FOR MONEY by an
 /// adversary who wants to and is worth nothing to them. A reconciler must not treat
 /// −0.000226% as a hard floor; treat the ECONOMIC ratio as the bound.
 test amm_open_price_gap_bound_from_closing_buys_only() {
@@ -743,35 +746,33 @@ test amm_k_at_graduation() {
   amm_k(16_717_047_886, pool_bag_v3) == 4_366_557_686_383_758_250
 }
 
-/// AmmBuy of exactly the 10 ADA minimum.
-///   new_ada = 16,717,047,886 + 10,000,000 = 16,727,047,886
-///   new_tok = 4,366,557,686,383,758,250 / 16,727,047,886 = 261,047,718
-///   tokens_out = 261,203,875 − 261,047,718 = 156,157
+/// AmmBuy of 10 ADA, v3.2 (0.30% LP fee priced on the net input, amount OUT
+/// floored):
+///   net = 10,000,000 × 9,970 / 10,000 = 9,970,000
+///   out = ⌊9,970,000 × 261,203,875 / (16,717,047,886 + 9,970,000)⌋ = 155,688
 test amm_buy_ten_ada() {
-  amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000) == 156_157
+  amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000) == 155_688
 }
 
 /// AmmBuy of 100 ADA.
-///   new_ada = 16,817,047,886
-///   new_tok = k / 16,817,047,886 = 259,650,666
-///   tokens_out = 261,203,875 − 259,650,666 = 1,553,209
+///   net = 99,700,000
+///   out = ⌊99,700,000 × 261,203,875 / 16,816,747,886⌋ = 1,548,576
 test amm_buy_hundred_ada() {
-  amm_quote_buy(16_717_047_886, pool_bag_v3, 100_000_000) == 1_553_209
+  amm_quote_buy(16_717_047_886, pool_bag_v3, 100_000_000) == 1_548_576
 }
 
 /// AmmBuy of 1,000 ADA — the vector the validator's accept case uses.
-///   new_ada = 17,717,047,886
-///   new_tok = k / 17,717,047,886 = 246,460,793
-///   tokens_out = 261,203,875 − 246,460,793 = 14,743,082
+///   net = 997,000,000
+///   out = ⌊997,000,000 × 261,203,875 / 17,714,047,886⌋ = 14,701,341
 test amm_buy_thousand_ada() {
-  amm_quote_buy(16_717_047_886, pool_bag_v3, 1_000_000_000) == 14_743_082
+  amm_quote_buy(16_717_047_886, pool_bag_v3, 1_000_000_000) == 14_701_341
 }
 
-/// The AMM's opening effective price for a 10 ADA buy is a hair ABOVE the close
-/// price of ~64, as slippage requires — 10,000,000/156,157 = 64.038 lovelace per
-/// token. If this ever came out BELOW 64 the flip would be handing buyers a
-/// discount, which is exactly the v2 defect being removed.
-///   156,157 × 64 = 9,994,048 < 10,000,000        ⇒ paid more than 64/token
+/// The AMM's opening effective price for a 10 ADA buy is ABOVE the close price
+/// of ~64, as slippage plus the 0.30% LP fee require — 10,000,000/155,688 =
+/// 64.231 lovelace per token. If this ever came out BELOW 64 the flip would be
+/// handing buyers a discount, which is exactly the v2 defect being removed.
+///   155,688 × 64 = 9,964,032 < 10,000,000        ⇒ paid more than 64/token
 test amm_buy_price_is_just_above_the_close_price() {
   let out = amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000)
   out * 64 < 10_000_000
@@ -780,25 +781,27 @@ test amm_buy_price_is_just_above_the_close_price() {
 /// …and the FIRST AmmBuy is more expensive than the same-size buy would have been
 /// on the curve one instant earlier. The curve's effective price for a 10 ADA buy
 /// from (16,717,047,886, 404,061,018) is 10,000,000/156,190 = 64.0246, the AMM's
-/// is 64.0381: the AMM is SHALLOWER because its k is built on real reserves, so
-/// slippage per ADA is higher. That is a property of the design, not a defect —
-/// and it means the flip never opens a buy-side arbitrage against the curve.
+/// is 64.2310: the AMM is SHALLOWER because its k is built on real reserves, and
+/// as of v3.2 it also retains the 0.30% LP fee. That is a property of the design,
+/// not a defect — and it means the flip never opens a buy-side arbitrage against
+/// the curve.
 ///   curve  tokens_out = 156,190
-///   amm    tokens_out = 156,157   (33 fewer for the same 10 ADA)
+///   amm    tokens_out = 155,688   (502 fewer for the same 10 ADA — 33 of depth,
+///                                  the rest the LP fee accruing to the pool)
 ///
-/// ██ THIS TEST ALONE IS NOT A MEASUREMENT OF THE DEPTH STEP. ██ 10 ADA is the
-/// SMALLEST legal trade and the size at which the effect is essentially invisible —
-/// 33 tokens out of 156,190, or +0.021%. A regression that widened the depth step
-/// could not be detected here. `amm_depth_step_by_trade_size` below carries the
-/// realistic sizes and `amm_depth_step_k_ratio` pins the underlying constant.
+/// ██ THIS TEST ALONE IS NOT A MEASUREMENT OF THE DEPTH STEP. ██ 10 ADA is a
+/// small trade, the size at which the depth effect is nearly invisible. A
+/// regression that widened the depth step could not be detected here.
+/// `amm_depth_step_by_trade_size` below carries the realistic sizes and
+/// `amm_depth_step_k_ratio` pins the underlying constant.
 test amm_is_shallower_than_the_curve_at_the_same_instant() {
   let on_curve = quote_buy(16_717_047_886, curve_exhausted_token_reserve, 10_000_000)
   let on_amm = amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000)
   and {
     on_curve == 156_190,
-    on_amm == 156_157,
+    on_amm == 155_688,
     on_amm < on_curve,
-    on_curve - on_amm == 33,
+    on_curve - on_amm == 502,
   }
 }
 
@@ -815,13 +818,17 @@ test amm_is_shallower_than_the_curve_at_the_same_instant() {
 ///          out = 261,203,875 − k/(16,717,047,886 + ada_in)
 ///
 ///     ada_in         curve_out      amm_out    fewer   effective-price penalty
-///       100 ADA      1,556,482    1,553,209    3,273   +0.21073%
-///     1,000 ADA     15,043,278   14,743,082  300,196   +2.03618%
-///     5,000 ADA     65,466,990   60,137,980 5,329,010  +8.86131%
+///       100 ADA      1,556,482    1,548,576    7,906   +0.51053%
+///     1,000 ADA     15,043,278   14,701,341  341,937   +2.32589%
+///     5,000 ADA     65,466,990   59,999,006 5,467,984  +9.11346%
+///
+/// v3.2: the penalty now includes the 0.30% LP fee on top of the depth step —
+/// ~0.30% of each figure is not lost to the trader's counterparty, it is
+/// retained in the pool as permanent depth.
 ///
 /// The penalties are asserted as RATIO BRACKETS rather than as floats, so they are
 /// exact-integer statements that survive re-derivation: for the 1,000 ADA case,
-/// 2036/100,000 < (curve−amm)/amm < 2037/100,000.
+/// 2325/100,000 < (curve−amm)/amm < 2326/100,000.
 test amm_depth_step_by_trade_size() {
   let a = 16_717_047_886
   let c100 = quote_buy(a, curve_exhausted_token_reserve, 100_000_000)
@@ -832,23 +839,23 @@ test amm_depth_step_by_trade_size() {
   let m5k = amm_quote_buy(a, pool_bag_v3, 5_000_000_000)
   and {
     c100 == 1_556_482,
-    m100 == 1_553_209,
+    m100 == 1_548_576,
     c1k == 15_043_278,
-    m1k == 14_743_082,
+    m1k == 14_701_341,
     c5k == 65_466_990,
-    m5k == 60_137_980,
+    m5k == 59_999_006,
     // the AMM is strictly shallower at every size
     m100 < c100,
     m1k < c1k,
     m5k < c5k,
     // …and the penalty GROWS with size, which is the property the 10 ADA vector
-    // cannot see: 0.211% -> 2.036% -> 8.861%
-    ( c100 - m100 ) * 100_000 > m100 * 210,
-    ( c100 - m100 ) * 100_000 < m100 * 211,
-    ( c1k - m1k ) * 100_000 > m1k * 2036,
-    ( c1k - m1k ) * 100_000 < m1k * 2037,
-    ( c5k - m5k ) * 100_000 > m5k * 8861,
-    ( c5k - m5k ) * 100_000 < m5k * 8862,
+    // cannot see: 0.511% -> 2.326% -> 9.113%
+    ( c100 - m100 ) * 100_000 > m100 * 510,
+    ( c100 - m100 ) * 100_000 < m100 * 511,
+    ( c1k - m1k ) * 100_000 > m1k * 2325,
+    ( c1k - m1k ) * 100_000 < m1k * 2326,
+    ( c5k - m5k ) * 100_000 > m5k * 9113,
+    ( c5k - m5k ) * 100_000 < m5k * 9114,
   }
 }
 
@@ -893,8 +900,10 @@ test amm_depth_step_k_ratio() {
 /// halves, so the two observations look contradictory unless both are written down.
 ///
 ///   tokens_in      curve_gross        amm_gross        less by
-///     1,000,000     63,841,999       63,755,915        86,084   (0.135%)
-///   100,000,000  5,130,312,424    4,628,147,438   502,164,986   (9.788%)
+///     1,000,000     63,841,999       63,565,374       276,625   (0.433%)
+///   100,000,000  5,130,312,424    4,618,098,584   512,213,840   (9.984%)
+///
+/// v3.2: ~0.30% of the difference is the LP fee retained in the pool.
 ///
 /// The 100,000,000 vector is the one `validate_amm_sell`'s canonical accept case
 /// uses, so this ties the depth statement to the number the validator suite trades on.
@@ -906,71 +915,75 @@ test amm_depth_step_on_the_sell_side() {
   let m100m = amm_quote_sell_gross(a, pool_bag_v3, 100_000_000)
   and {
     c1m == 63_841_999,
-    m1m == 63_755_915,
+    m1m == 63_565_374,
     c100m == 5_130_312_424,
-    m100m == 4_628_147_438,
+    m100m == 4_618_098_584,
     // the AMM pays strictly less for the same tokens, at both sizes
     m1m < c1m,
     m100m < c100m,
-    // 0.13484% and 9.78820% of the curve's gross, bracketed exactly
-    ( c1m - m1m ) * 100_000 > c1m * 134,
-    ( c1m - m1m ) * 100_000 < c1m * 135,
-    ( c100m - m100m ) * 100_000 > c100m * 9_788,
-    ( c100m - m100m ) * 100_000 < c100m * 9_789,
+    // 0.43330% and 9.98406% of the curve's gross, bracketed exactly
+    ( c1m - m1m ) * 100_000 > c1m * 433,
+    ( c1m - m1m ) * 100_000 < c1m * 434,
+    ( c100m - m100m ) * 100_000 > c100m * 9_984,
+    ( c100m - m100m ) * 100_000 < c100m * 9_985,
   }
 }
 
-/// AmmSell of 1,000,000 tokens.
-///   new_tok = 261,203,875 + 1,000,000 = 262,203,875
-///   new_ada = k / 262,203,875 = 16,653,291,971
-///   gross = 16,717,047,886 − 16,653,291,971 = 63,755,915
+/// AmmSell of 1,000,000 tokens, v3.2 (net input priced, ADA out floored):
+///   net = 1,000,000 × 9,970 / 10,000 = 997,000
+///   gross = ⌊997,000 × 16,717,047,886 / (261,203,875 + 997,000)⌋ = 63,565,374
 test amm_sell_one_million_tokens() {
-  amm_quote_sell_gross(16_717_047_886, pool_bag_v3, 1_000_000) == 63_755_915
+  amm_quote_sell_gross(16_717_047_886, pool_bag_v3, 1_000_000) == 63_565_374
 }
 
 /// AmmSell of 100,000,000 tokens — the vector the validator's accept case uses.
-///   new_tok = 361,203,875
-///   new_ada = k / 361,203,875 = 12,088,900,448
-///   gross = 16,717,047,886 − 12,088,900,448 = 4,628,147,438
+///   net = 99,700,000
+///   gross = ⌊99,700,000 × 16,717,047,886 / 360,903,875⌋ = 4,618,098,584
 test amm_sell_hundred_million_tokens() {
-  amm_quote_sell_gross(16_717_047_886, pool_bag_v3, 100_000_000) == 4_628_147_438
+  amm_quote_sell_gross(16_717_047_886, pool_bag_v3, 100_000_000) == 4_618_098_584
 }
 
-/// k is NON-INCREASING on the AMM buy path too, same rounding, same warning.
+/// ██ v3.2: k STRICTLY INCREASES on the AMM buy path. ██ The FULL `ada_in`
+/// enters the reserve while the quote priced only the net, so the 0.30% stays
+/// in the pool — this is the LP fee working, measured rather than assumed.
 ///   k_old = 4,366,557,686,383,758,250
-///   k_new = 16,727,047,886 × 261,047,718 = 4,366,557,679,517,024,148
-///   delta = −6,866,734,102
-test amm_buy_k_is_non_increasing() {
+///   k_new = 16,727,047,886 × (261,203,875 − 155,688) = 4,366,565,524,502,482,682
+///   delta = +7,838,118,724,432
+/// (The CURVE buy path still floors the retained reserve and k weakly DECREASES
+/// there — the two doctrines are per-path, see `quote_buy`'s comment.)
+test amm_buy_k_strictly_increases() {
   let out = amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000)
   let k_new = amm_k(16_727_047_886, pool_bag_v3 - out)
   let k_old = amm_k(16_717_047_886, pool_bag_v3)
-  k_new <= k_old && k_new - k_old == -6_866_734_102
+  k_new > k_old && k_new - k_old == 7_838_118_724_432
 }
 
-/// The AMM round-trip leak, measured rather than assumed: buy 10 ADA, sell every
-/// token back, receive 10,000,027 — 27 lovelace more than was paid in, from the
-/// buy's k-drift exactly as on the curve. Against ≥1.13 ADA of mandatory fees on
-/// the pair that is a 41,000:1 loss, so it is not grindable. PRICE ANY FUTURE FEE
-/// RELAXATION AGAINST 27, not against 1.
-test amm_round_trip_leak_is_27_lovelace() {
+/// ██ v3.2: THE ROUND TRIP PAYS THE POOL, NOT THE TRADER. ██ Under the old
+/// user-favouring floors a buy-then-sell-back returned 27 lovelace MORE than was
+/// paid in (bounded, not grindable, but the wrong sign). With the LP fee priced
+/// on both legs the trader gets back 9,940,040 of 10,000,000 — the pool keeps
+/// 59,960 lovelace (~0.60%, two 0.30% legs) as permanent depth, BEFORE the
+/// 1% + 2 ADA fee outputs that both legs also owe. Grinding round trips now
+/// strictly deepens the pool.
+test amm_round_trip_pays_the_pool() {
   let out = amm_quote_buy(16_717_047_886, pool_bag_v3, 10_000_000)
   let gross = amm_quote_sell_gross(16_727_047_886, pool_bag_v3 - out, out)
   and {
-    out == 156_157,
-    gross == 10_000_027,
-    gross - 10_000_000 == 27,
+    out == 155_688,
+    gross == 9_940_040,
+    10_000_000 - gross == 59_960,
   }
 }
 
-/// …and the leak on a 1,000 ADA round trip is 57 lovelace, i.e. it does NOT scale
-/// with trade size (it is one token's worth of ADA, and price moves less than
-/// linearly). Bounded, and pinned so a fee change can be priced.
-test amm_round_trip_leak_does_not_scale_with_size() {
+/// …and the pool's take on a 1,000 ADA round trip is 5,654,845 lovelace — it
+/// SCALES with trade size now (it is a percentage, where the old 57-lovelace
+/// leak was one token's floor). Pinned so a fee change can be priced.
+test amm_round_trip_take_scales_with_size() {
   let out = amm_quote_buy(16_717_047_886, pool_bag_v3, 1_000_000_000)
   let gross = amm_quote_sell_gross(17_717_047_886, pool_bag_v3 - out, out)
   and {
-    gross == 1_000_000_057,
-    gross - 1_000_000_000 == 57,
+    gross == 994_345_155,
+    1_000_000_000 - gross == 5_654_845,
   }
 }
 
@@ -978,53 +991,55 @@ test amm_round_trip_leak_does_not_scale_with_size() {
 ///
 /// The largest sell that can ever be presented is the entire float outside the
 /// pool. At graduation that is `sellable_v3` = 738,796,125, and dumping ALL of it
-/// leaves the pool holding 4,366,557,686 lovelace = 4,366.56 ADA and the whole
+/// leaves the pool holding 4,376,257,175 lovelace = 4,376.26 ADA and the whole
 /// 1e9 supply.
 ///
-///   new_tok = 261,203,875 + 738,796,125 = 1,000,000,000 = total_supply_v3
-///   new_ada = k / 1e9 = 4,366,557,686
-///   gross   = 16,717,047,886 − 4,366,557,686 = 12,350,490,200
+///   net     = 738,796,125 × 9,970 / 10,000 = 736,579,736
+///   gross   = ⌊736,579,736 × 16,717,047,886 / (261,203,875 + 736,579,736)⌋
+///           = 12,340,790,711
+///   left    = 16,717,047,886 − 12,340,790,711 = 4,376,257,175
 ///
 /// So the solvency cap in `amm_quote_sell_gross` NEVER binds on a genuine pool,
 /// and "liquidity is locked for life" is not merely the absence of a withdraw
 /// redeemer — the arithmetic keeps a floor under the pool that no volume of
 /// selling can remove.
 ///
-/// ── ██ THE FLIP SIDE, STATED SO NOBODY REPORTS IT AS A BUG: 26.12% OF THE RAISE
+/// ── ██ THE FLIP SIDE, STATED SO NOBODY REPORTS IT AS A BUG: ≥26.12% OF THE RAISE
 ///        IS PERMANENTLY UNREACHABLE, AND IT IS NOT A TUNING PARAMETER. ██ ──────
-/// The floor is `k / total_supply_v3 = A · pool_bag_v3 / total_supply_v3`, so as a
-/// FRACTION of the raise it is exactly `pool_bag_v3 / total_supply_v3` =
-/// 261,203,875 / 1,000,000,000 = 26.1203875% — independent of A, and equal to the
-/// pool-bag fraction by construction rather than by coincidence. NO HOLDER CAN EVER
-/// RECOVER THAT ADA: there is no withdraw path (deliberately), so 4,366.56 ADA of a
-/// 16,717 ADA raise is locked in the pool forever.
+/// Pre-LP-fee the floor was exactly `pool_bag_v3 / total_supply_v3` =
+/// 26.1203875% of the raise. v3.2's retained fee means the pool keeps MORE than
+/// the identity (26.1784% on this single dump, and rising with every trade that
+/// precedes it), so the identity is asserted as a FLOOR rather than an equality.
+/// NO HOLDER CAN EVER RECOVER THAT ADA: there is no withdraw path (deliberately),
+/// so ≥4,376 ADA of a 16,717 ADA raise is locked in the pool forever — and
+/// cumulative volume only raises it.
 ///
-/// That is the accepted price of "rug-proof", not a defect, and it cannot be tuned
-/// down without shrinking `pool_bag_v3` — which would reintroduce v2's price gap at
-/// the flip, since the bag is exactly what closes it. The two properties are the same
-/// number seen from two sides. Asserted below as a derived identity so the percentage
-/// is never re-hardcoded as a literal.
-test amm_sell_of_the_whole_float_leaves_4366_ada() {
+/// That is the accepted price of "rug-proof", not a defect, and the floor cannot
+/// be tuned down without shrinking `pool_bag_v3` — which would reintroduce v2's
+/// price gap at the flip, since the bag is exactly what closes it. The pool-bag
+/// identity itself is still asserted exactly, on the params, so the percentage is
+/// never re-hardcoded as a literal.
+test amm_sell_of_the_whole_float_leaves_4376_ada() {
   let gross = amm_quote_sell_gross(16_717_047_886, pool_bag_v3, sellable_v3)
   let a = 16_717_047_886
   let left = a - gross
   and {
     pool_bag_v3 + sellable_v3 == total_supply_v3,
-    gross == 12_350_490_200,
-    left == 4_366_557_686,
+    gross == 12_340_790_711,
+    left == 4_376_257_175,
     // the pool keeps more than 4,000 ADA no matter what
     left > 4_000_000_000,
-    // ── the locked FRACTION is `pool_bag_v3 / total_supply_v3`, DERIVED ────────
-    // left == A · P / S (floored), so left/A == P/S == 26.1203875%. Cross-multiplied
-    // to stay in integers and bracketed by one part in 1e8, because the floor on
-    // `k / total_supply_v3` loses a fraction of a lovelace:
+    // ── the pre-fee identity `pool_bag_v3 / total_supply_v3` is now a FLOOR ────
+    // left/A >= P/S == 26.1203875%, with the LP fee's retention on top
+    // (26.178409% on this one dump). Cross-multiplied to stay in integers:
     left * 100_000_000 > a * 26_120_387,
-    left * 100_000_000 < a * 26_120_388,
-    // ██ AND THE IDENTICAL BRACKET HOLDS FOR pool_bag_v3 / total_supply_v3. ██
-    // That is the content of the claim: the permanently-locked share of the raise IS
-    // the pool-bag share of the supply, not an independent number that happens to be
-    // close to it. Shrink the bag and this shrinks with it — along with the bag's
-    // ability to close the price gap at the flip.
+    // …and pinned exactly at this state so a fee retune is a visible diff:
+    left * 100_000_000 > a * 26_178_408,
+    left * 100_000_000 < a * 26_178_410,
+    // ██ THE POOL-BAG IDENTITY ITSELF IS STILL EXACT, ON THE PARAMS. ██
+    // The permanently-locked floor IS the pool-bag share of the supply; the LP
+    // fee only ever ADDS to it. Shrink the bag and the floor shrinks with it —
+    // along with the bag's ability to close the price gap at the flip.
     pool_bag_v3 * 100_000_000 > total_supply_v3 * 26_120_387,
     pool_bag_v3 * 100_000_000 < total_supply_v3 * 26_120_388,
   }
@@ -1033,58 +1048,54 @@ test amm_sell_of_the_whole_float_leaves_4366_ada() {
 /// ██ AND IT CANNOT BE DRAINED OF TOKENS. ██
 ///
 /// Spending the ENTIRE ADA SUPPLY (45e9 ADA = 4.5e16 lovelace) on one AmmBuy
-/// leaves 97 tokens in the pool.
-///   new_ada = 16,717,047,886 + 45,000,000,000,000,000 = 45,000,016,717,047,886
-///   new_tok = k / new_ada = 97
-/// Non-zero, so `token_reserve >= 1` holds on any reachable state — but the
-/// validator asserts it anyway, because a self-seeded pool graduated at
-/// `ada_reserve = 1` has k = 261,203,875 and this bound does not apply to it.
+/// leaves 98 tokens in the pool (v3.2: one more than pre-fee — the LP fee's
+/// retention shows up even here).
+///   net = 4.5e16 × 9,970 / 10,000 = 44,865,000,000,000,000
+///   out = ⌊net × 261,203,875 / (16,717,047,886 + net)⌋ = 261,203,777
+/// And structurally: `⌊net·T/(A+net)⌋ < T` for every input, so zero tokens is
+/// unreachable at ANY size — but the validator asserts `new_tok >= 1` anyway,
+/// as defence in depth for degenerate self-seeded pools.
 test amm_buy_cannot_empty_the_token_side() {
   let out = amm_quote_buy(16_717_047_886, pool_bag_v3, 45_000_000_000_000_000)
   and {
-    pool_bag_v3 - out == 97,
+    pool_bag_v3 - out == 98,
     pool_bag_v3 - out >= 1,
   }
 }
 
-/// ██ THE FLOOR-DIVISION EDGE, MEASURED. ONE LOVELACE BUYS ONE WHOLE TOKEN. ██
+/// ██ THE FLOOR-DIVISION EDGE, RE-MEASURED FOR v3.2. MICRO-BUYS NOW YIELD ZERO. ██
 ///
-/// This is NOT what a reviewer expects and the first version of this test asserted
-/// the opposite ("63 lovelace buys nothing"), which is FALSE. Re-derived:
-/// `new_tok = k / (A + ada_in)` and `k = A·P`, so
-/// `k/(A+1) = P − P/(A+1) = 261,203,875 − 0.0156…`, whose FLOOR is `P − 1`. Any
-/// `ada_in >= 1` therefore yields at least one token — worth ~64 lovelace — because
-/// the floor lands on the reserve the pool RETAINS (`amm_quote_buy`'s doc comment).
-///
-/// It is the AMM twin of the curve's documented k-drift, and its worst case is the
-/// same: one token per transaction. Two things make it unreachable and a third
-/// makes it unprofitable even if they were removed:
-///   • `AmmBuy` requires `ada_in >= min_trade_ada_v3` (10 ADA) with NO exemption —
-///     the curve's closing-buy exemption has no analogue because the AMM never
-///     closes.
-///   • `platform_fee_flat_v3` is 500,000 lovelace per trade, ~7,800× the value of
-///     the token extracted.
-///   • the ledger's own min-fee on the transaction is another ~170,000 lovelace.
-/// PINNED so that if the minimum is ever relaxed this is a known quantity rather
-/// than a discovery.
-test amm_buy_of_one_lovelace_still_returns_one_token() {
+/// The pre-fee quote floored the RETAINED reserve, so even one lovelace bought a
+/// whole ~64-lovelace token. v3.2 floors the amount OUT and nets the input
+/// first, which flips the edge:
+///   ada_in = 1:  net = ⌊1 × 9,970/10,000⌋ = 0  ⇒ out = 0
+///   ada_in = 64: net = 63                      ⇒ out = ⌊63·P/(A+63)⌋ = 0
+///   ada_in = 65: net = 64                      ⇒ out = 1   (the smallest buy
+///                                                that yields a token)
+/// A zero-output buy still validates (`correct_tokens_out` holds at 0 and
+/// `ada_in > 0` is satisfied) — it is a donation to the pool, self-limiting at
+/// 2 ADA flat fee per attempt, and `min_out >= 1` protects any real trader from
+/// building one. PINNED so the edge is a known quantity rather than a discovery.
+test amm_buy_edge_micro_buys_yield_zero_tokens() {
   and {
-    amm_quote_buy(16_717_047_886, pool_bag_v3, 1) == 1,
-    amm_quote_buy(16_717_047_886, pool_bag_v3, 63) == 1,
-    // …and the flat platform fee alone is ~7,800 times the 64 lovelace extracted
-    500_000 > 64 * 7_800,
+    amm_quote_buy(16_717_047_886, pool_bag_v3, 1) == 0,
+    amm_quote_buy(16_717_047_886, pool_bag_v3, 64) == 0,
+    amm_quote_buy(16_717_047_886, pool_bag_v3, 65) == 1,
+    // the flat platform fee alone is ~31,000 times the ~64-lovelace token the
+    // smallest yielding buy extracts
+    2_000_000 > 64 * 31_000,
   }
 }
 
-/// A one-token AmmSell returns 63 lovelace gross — less than the 500,000 flat
-/// platform fee, so `sell_net` is negative and the trade is self-limiting without
-/// a minimum. This is the same reasoning that removed the curve's sell-side
-/// minimum; it applies unchanged here.
-///   new_tok = 261,203,876 ; new_ada = k / 261,203,876 = 16,717,047,822
-///   gross = 64
+/// A one-token AmmSell now grosses ZERO — the 0.30% net floors one token to
+/// nothing before it ever reaches the constant product — and zero is less than
+/// the 2,000,000 flat platform fee besides, so `sell_net` is deeply negative and
+/// the trade is self-limiting without a minimum. This is the same reasoning that
+/// removed the curve's sell-side minimum; it applies a fortiori here.
+///   net = ⌊1 × 9,970 / 10,000⌋ = 0 ⇒ gross = 0
 test amm_sell_of_one_token_is_priced_out_by_the_flat_fee() {
   let gross = amm_quote_sell_gross(16_717_047_886, pool_bag_v3, 1)
-  gross == 64 && gross < 500_000
+  gross == 0 && gross < 2_000_000
 }
 
 // ── G0 / G3 as pure arithmetic ───────────────────────────────────────────────
