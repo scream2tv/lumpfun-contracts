@@ -1,0 +1,311 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# PINNED SCRIPT HASHES — checked by ./aikcheck.sh build (and ./aikcheck.sh hashes)
+#
+# `aiken check` cannot see these: an Aiken test cannot read plutus.json, and a
+# validator cannot hash itself. So a stdlib bump, a `plutus = "v3"` change, a
+# compiler-flag change or an accidental edit would leave the suite green while
+# plutus.json quietly carried different bytes. That is the D-1/D-2 off-chain-to-
+# on-chain seam the V2 test report says every real defect lived in, and it is why
+# this file exists as a BUILD-STEP assertion rather than a comment.
+#
+# Format: <validator title>  <28-byte blake2b-224 script hash>
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# ── THE H_fail LINE IS GONE. THIS IS NOT A LOST PIN. ─────────────────────────
+#
+# This file used to carry a third entry:
+#     lumpfun_dao_fail.lumpfun_dao_fail.else  22c9a103ed3f2fa97c982d76d6e2af50c5d54ac306983b196c8fcdab
+# under a banner reading "IMMUTABLE. DO NOT EVER CHANGE THIS LINE." It was the
+# always-fail DAOPolicy that every graduated LumpFun v3.0 SPLASH royaltyPool named
+# at field 11 of its birth datum, immutably, for the life of that pool — so being
+# wrong about it meant Splash's `DAOAction` (which applies no scriptPreserved, no
+# noMoreTokens and no datum check) could become executable against LumpFun's LP
+# reserves by whoever controlled the substituted hash, with the ADA already
+# committed and no recovery at any layer.
+#
+# THE SPLASH PATH WAS PARKED BY THE USER ON 2026-07-26. `validators/lumpfun_dao_fail.ak`
+# and `lib/lumpfun/splash_v3.ak` are DELETED, `Graduate` now flips the pool datum in
+# place, and no LumpFun datum names any foreign script anywhere. There is no
+# always-fail validator left to hash, so the entry and its independent recompute in
+# `aikcheck.sh` were removed together rather than left asserting a fact about a file
+# that no longer exists. The recompute DISCIPLINE was kept and re-pointed at the pool
+# hash below, which is the one value off-chain parameter application depends on.
+#
+# The Splash design is recoverable in full from git history at the Phase-2 commit.
+# Read the banner at the top of validators/lump_pool.ak before reviving any of it.
+
+# ── The pool — CHANGES DELIBERATELY, never silently ───────────────────────────
+#
+# THE CANONICAL v3 POOL SCRIPT HASH. This is the value the off-chain MUST use
+# when applying `lump_mint_v3`'s `pool_script_hash` parameter, and the value a
+# token's authenticity recomputation must compare against (§8.3 "recompute, never
+# scan", with NO fallback to asset matching). The minting policy pins the pool
+# ADDRESS to whatever is applied here, so the on-chain guarantee is only as strong
+# as this parameter — and nothing in the Aiken tree can bind it, because parameter
+# application happens off-chain. The minting-policy tests use a placeholder
+# (`mp_pool = #"d1d1…"`), so this file is the single source of truth.
+#
+# `./aikcheck.sh build` now ALSO recomputes this hash independently from
+# `compiledCode` (blake2b-224 over 0x03 ‖ CBOR) rather than only comparing the
+# blueprint's own `hash` field, which the same compiler run produced.
+#
+# Second-order, and unique to v3: v2's pool was parameterised by `policy_id`, so a
+# policy id determined its pool address. v3's is NOT, so verifying a token needs
+# the SEED UTxO as well as this hash. THE REGISTRY MUST STORE THE SEED
+# OutputReference PER TOKEN or the §8.3 recompute cannot be performed at all.
+#
+# ██ AND ONE THING THAT CHANGED WITH THE IN-PLACE FLIP: this address is now where a
+# token trades for its ENTIRE LIFE, in both modes. Under the Splash path a graduated
+# token left for a foreign address and this hash mattered only until graduation. Now
+# an aggregator keyed on this one address sees every LumpFun trade there will ever
+# be — which is what §2.1 wanted — and the off-chain `policy_id` recompute is the
+# only thing separating two genuine tokens at it, forever rather than temporarily.
+#
+# History, newest last. Each change was deliberate; the gate caught every one.
+#   494b0fd134c436183f0e11243e650023e3b3f25de0fe5df0c575ef74  initial Phase 1 build
+#   9caa860a8ecec0acf3aff5fa731bd3fdbd078e3636bef36c383f8495  adversarial-review fixes
+#     (Graduate stubbed to `fail`, fee_schedule_ok, value_shape_ok, no_policy_mint,
+#      sell-side size_ok removal, sell cap_ok)
+#   4169dd3dc99977bbe63726058ac45b5ac508ae98b34a3d60db4642d4  treasury_pkh_v3 pinned
+#     to the real mainnet operator treasury credential, 2026-07-25 (was the
+#     `SET-TREASURY-PKH-BEFORE-MAIN` sentinel). 184 checks stayed green across the
+#     substitution, so nothing in the suite depended on the placeholder value.
+#   7b13d0165f20fb7943b9cee8534c6d794bbbb704a03be11c6a423f6c  PHASE 2 — `Graduate`
+#     IMPLEMENTED against SPLASH, 2026-07-25. §5.5's full G0..G13 plus
+#     POOL_OUT_IDX_IN = 0. 209 -> 275 checks; mutverify 96 cases, 0 problems.
+#   969cf645178f5eb8d14641027bc286c99f6f4a16c62077b9770ac861  ADVERSARIAL-REVIEW
+#     FIXES to the Splash Graduate branch, 2026-07-26. Four behavioural changes, all
+#     strictly shrinking the accepted set (dao_policy_ok length == 1; G12 on the
+#     payment credential; g9b reference_script == None; indexer_shape_ok extracted so
+#     it could be falsified). 276 -> 290 checks; mutverify 96 -> 115 cases, 0 problems.
+#   811da3fc474b3ddb60c4584f5e5fa8614118a6a275fa5176d41e9ad8  ██ PHASE 3 — SPLASH
+#     PARKED, IN-PLACE AMM GRADUATION, 2026-07-26. ██ The largest deliberate change
+#     to this script's bytes there will be, and the only one that both ADDS and
+#     REMOVES surface. What changed the hash:
+#       • `PoolDatumV3` gained an eleventh field, `mode: PoolMode`, appended LAST so
+#         field indices 0..9 keep their meanings for every off-chain reader. The wire
+#         shape test in pool_types.ak moved from "ten fields" to "eleven".
+#       • `PoolRedeemer` went from 3 constructors to 5: `Graduate` LOST its `lq0`
+#         witness field (nullary now — nothing to guess, nothing to check), and
+#         `AmmBuy { min_out }` / `AmmSell { min_out }` were added at indices 3 and 4.
+#         Buy = 0, Sell = 1, Graduate = 2 are unchanged.
+#       • R-5 SPLIT INTO TWO HELPERS. `with_reserves` freezes everything but the two
+#         reserves INCLUDING `mode` (used by all four trade branches);
+#         `with_graduation` is the only function in the project that may write `mode`,
+#         and it hardcodes `Amm` and `token_reserve = pool_bag_v3`.
+#       • `validate_graduate` REPLACED. Out: two sha2_256 asset-name derivations, the
+#         strict isqrt bracket, `lq_mint`, three exact foreign `Value` comparisons, a
+#         fifteen-field `RoyaltyPoolConfig` soft-cast and equality, `dao_policy_ok`,
+#         `indexer_shape_ok`, `pool_out_idx_v3`, `splash_pool_address()`, the
+#         three-entry mint equality and the NFT burn. In: `mode == Bootstrap`, a
+#         two-argument `graduation_curve_checks`, one `with_graduation` equality, one
+#         three-entry `Value` equality, `tx.mint == zero`, and `reference_script == None`.
+#         The branch got substantially CHEAPER as well as smaller.
+#       • `validate_amm_buy` / `validate_amm_sell` ADDED — constant product on the
+#         REAL reserves, offset 0 both sides, same fee schedule, min_trade on buys
+#         only, `cap_ok` against `total_supply_v3` (NOT `virtual_token_v3` — those
+#         differ by exactly `token_offset_v3`), and a `solvency_ok` on each.
+#       • `value_matches` became MODE-AWARE — two literal arms, Bootstrap with both
+#         offsets and Amm with neither.
+#       • `sole_continuation` now filters on the PAYMENT CREDENTIAL rather than the
+#         full address, with the stake part pinned separately by
+#         `continuation_address_exact`. Strictly stronger on all five branches; it is
+#         the same correction the Splash review made to G12, generalised.
+#       • `fee_schedule_ok` is now called on FOUR branches instead of two.
+#     Suite 290 -> 297 checks (the Splash-side arithmetic and its 71 graduate tests
+#     were deleted; the AMM, cross-mode, rebase, monotonicity and continuity suites
+#     replaced them). mutverify 115 -> 123 cases, 0 problems.
+#
+#     ██ AND THE BRANCH GOT MUCH CHEAPER, WHICH IS WORTH RECORDING BECAUSE THE
+#     ██ SPLASH BRANCH WAS THE MOST EXPENSIVE THING IN THE PROJECT.
+#     Measured by `aiken check`'s own accounting on the canonical two-step close
+#     (these figures include the harness building the mock Transaction, so the
+#     on-chain cost is lower):
+#       Graduate, Splash path   mem 944,535  cpu 330,338,638   6.7% / 3.3% of the
+#                                                              mainnet per-tx budget
+#       Graduate, in-place flip mem 484,166  cpu 156,364,555   3.5% / 1.6%
+#                               i.e. −48.7% memory and −52.7% cpu.
+#     The two new AMM branches land where the curve branches already were:
+#       AmmBuy   mem 599,328  cpu 189,559,831   (Buy  mem 600,943 cpu 190,531,902)
+#       AmmSell  mem 606,844  cpu 191,751,899   (Sell mem 606,656 cpu 192,247,078)
+#     So a graduated token's trades cost the same as a curve token's, and the
+#     one-way door costs half what it used to.
+#   9dc1e7fb60df6e5bdca7246e29ee39cf9d2a19ee84970c41ab4c3eb8  ██ REVIEW FIX — THE
+#     REFERENCE-SCRIPT GUARD, EXTENDED FROM ONE BRANCH TO FIVE, 2026-07-26. ██
+#     ONE behavioural change, and it strictly SHRINKS the accepted set on every
+#     branch it touches. Nothing else in this build alters logic — everything else was
+#     tests, mutverify cases and comments.
+#
+#     WHAT CHANGED: `reference_script == None` was asserted at GENESIS
+#     (`lump_mint_v3.no_ref_script_ok`) and at the FLIP (`validate_graduate`) and
+#     NOWHERE ELSE. The four TRADE branches never read the field, so any `Buy`,
+#     `Sell`, `AmmBuy` or `AmmSell` could WELD A REFERENCE SCRIPT onto the pool. The
+#     inline `let no_ref_script = …` in `validate_graduate` was extracted into a shared
+#     `no_ref_script_kept(own_output)` and is now a clause in all FIVE and-blocks.
+#
+#     WHY IT IS A REAL DEFECT AND NOT TIDINESS: under Conway,
+#     `minFeeRefScriptCoinsPerByte` (tier 1 = 15 lovelace/byte, ×1.2 per 25 KiB) is
+#     charged over the reference scripts on a transaction's RESOLVED INPUTS — so the
+#     griefer pays one ordinary trade and EVERY SUBSEQUENT TRADER pays the tier. It
+#     also inflates the pool output's own min-UTxO deposit via `coinsPerUTxOByte`,
+#     which bites hardest in `Amm` mode where the lovelace is pinned to `ada_reserve`
+#     with no `pool_floor_v3` cushion beside it, and can make a large sell unbuildable
+#     with the reserve still inside. `validate_graduate`'s own comment already
+#     described exactly this harm as the reason for its guard; the trade branches left
+#     it reachable, and reachable repeatedly on the pair that runs forever.
+#
+#     It was only ever "self-healing" by the grace of the transaction builder — nothing
+#     on-chain removed it. That made LumpFun's off-chain continuation builder
+#     load-bearing; it is now a guard instead of a standing requirement.
+#
+#     Suite 297 -> 318 checks (+21: four reference-script rejects, one per trade
+#     branch; the AmmSell branch's missing stake, stake-decoy, fee-schedule, own-treasury
+#     and NFT-decoy coverage plus a raised-fee accept control; six AmmSell R-5 per-field
+#     rejects; three math_v3 depth-step tests; one fees_v3 AMM hatch-domain test).
+#     mutverify 124 -> 141 cases, 0 problems.
+#     THE MINT HASH IS UNCHANGED at 564998bd… — `minting_policy.ak` received comment
+#     corrections only, and `lump_mint_v3` takes the pool hash as a PARAMETER applied
+#     off-chain, so the unapplied validator's bytes do not move when the pool moves.
+#     ██ THE APPLIED POLICY ID DOES MOVE. Anything that has already applied
+#     `pool_script_hash = 811da3fc…` must re-apply against 9dc1e7fb… ██
+#   e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e  ██ THE FEE + FLOOR
+#     COHORT, 2026-07-26. ██ Operator decision: v3 becomes the only launchpad, so
+#     its economics were set to what the product actually ships.
+#       • platform_fee_flat_v3  500,000 -> 2,000,000   (2 ADA, the whole platform take)
+#       • platform_fee_bps_v3        50 -> 0           (no percentage. see below)
+#       • creator_fee_bps_v3         80 -> 100         (1%)
+#       • pool_floor_v3      10,000,000 -> 2,500,000   (launching is min-UTxO + tx fee)
+#       • min_trade_ada_v3   10,000,000 -> DELETED     (no minimum trade)
+#     Curve shape is UNCHANGED — 8,000 -> 64,000 FDV, and every token-space
+#     constant is untouched, so the pre-allocated bag and the 0.00% graduation gap
+#     are exactly as verified.
+#
+#     `min_trade_ada_v3` WAS REPLACED, NOT DELETED. Its own note recorded that it
+#     subsumed `ada_in > 0`; both buy branches now assert that explicitly. Without
+#     it a zero-ADA AmmBuy was structurally admissible — quote 0, identical datum,
+#     value invariant intact — an accepted no-op, repeatable against the permanent
+#     pool. The curve's CLOSING-BUY EXEMPTION went with the minimum and that is
+#     safe: it existed only because a minimum could make the final buy illegal.
+#
+#     pool_floor_v3 IS AT THE LEDGER'S FLOOR, NOT A CHOSEN NUMBER. Measured at
+#     utxoCostPerByte 4310: the genesis output is 257 bytes with an 8-byte ticker
+#     (min-UTxO 1,797,270) and 307 with the 32-byte maximum (2,012,770). 2.5 ADA
+#     clears the worst case with ~0.49 ADA spare. Anything at or below 2 ADA is a
+#     trap — it works for short tickers and silently makes long ones unlaunchable,
+#     because `pool_seeded` demands `lovelace == pool_floor_v3` EXACTLY.
+#
+#     THE SUITE WAS RE-DERIVED, NOT PATCHED. 22 tests failed on the param change
+#     and every accept constant was recomputed from the new schedule. Two tests
+#     were DELETED because they inverted rather than failed:
+#       - `size_rejects_a_buy_one_lovelace_under_the_minimum` kept PASSING for the
+#         wrong reason (its 549,999 platform output is under the new 2 ADA fee, so
+#         the tx still rejected) while the guard it named no longer existed.
+#       - `mint_rejects_zeroed_platform_fee_bps` asserted a zero bps is refused;
+#         zero IS the cohort value now. Replaced by
+#         `mint_rejects_a_nonzero_platform_fee_bps`, and the revenue defence moves
+#         wholly to `mint_rejects_zeroed_platform_fee_flat`.
+#     Still 321 checks, 0 errors, 0 warnings.
+lump_pool.lump_pool_v3.spend  e81825bb5f0b784e1080a4903ee0472f9d148e07861da83f6aeeef8e
+
+# ── The one-shot minting policy, UNAPPLIED ────────────────────────────────────
+#
+# This is the hash of the PARAMETERISED script before `(one_shot_utxo,
+# pool_script_hash)` are applied, so it is not any real token's policy id — it is
+# the artifact identity. Each token's actual policy id is this script applied to
+# its own seed plus the pool hash above.
+#
+# History, newest last.
+#   df734166d08db07a8c991312c34a1d59cc5790447f730c9c62ed62b0  initial Phase 1 build
+#   ff2aa65b35851044b4f07e0b4d84e8f864e0a72ab91d16ed53bf1423  adversarial-review fixes
+#     (treasury pin, pool-hash exclusions, genesis value shape, no reference script,
+#      Retire address check)
+#   3c8e879f1af03656bc557ac8e5a3b9f2c18a995cd2df91017b429980  treasury_pkh_v3 pinned
+#     to the real mainnet operator treasury credential, 2026-07-25. UNCHANGED across
+#     Phase 2, which is not the same as "unaffected" — see the note below.
+#   564998bd197dc9e485b7844925420b92ef0fb2776921a8405fe310ca  ██ PHASE 3 — LAUNCH-ONLY,
+#     2026-07-26. ██ The first Phase where this hash moved. What changed it:
+#       • `MintRedeemer.Retire` DELETED, and with it the entire burn handler
+#         (`only_nft_burned`, `nft_in_input`). `MintRedeemer` now has ONE constructor
+#         and the policy has ONE handler. `Launch` stays at `Constr(0, [])`, so no
+#         existing builder has to move.
+#       • `pool_seeded` gained `mode == Bootstrap` to the genesis datum pins, and its
+#         full-arity destructure gained the eleventh field.
+#     C-1 IS STRICTLY STRONGER FOR IT. "Curve supply is untouchable for the life of
+#     the token" used to be a THREE-SCRIPT argument (the NFT is 1-of-1, `Retire`
+#     needs it in an input at the pool address, `pool_nft_kept` means it can never
+#     leave, and the ledger forbids burning it during a trade). It is now a
+#     one-premise structural fact: the only handler requires the one-shot seed UTxO,
+#     that UTxO is consumed at launch, and no other handler exists. Total supply is
+#     provably immutable at 1e9 and the pool NFT count provably immutable at 1, for
+#     life, with no cross-script step.
+#
+# ██ READ BEFORE APPLYING PARAMETERS. ██
+#
+# `lump_mint_v3` takes `pool_script_hash` as a PARAMETER, and that parameter is the
+# pool hash above, which DID change. So EVERY APPLIED POLICY ID CHANGES, and with it
+# every token's policy id, both its asset ids, and the §8.3 recompute — even in the
+# Phases where the unapplied hash below stayed still.
+#
+# Harmless today only because NO v3 TOKEN HAS LAUNCHED YET. The moment one does,
+# §8.5 freezes this: a later edit to `lump_pool.ak` would produce a pool address the
+# already-deployed minting policies do not pin, and `pool_seeded` would reject every
+# subsequent launch under the old policy while the old pools kept trading at the old
+# address. At that point the change is a NEW COHORT (v3.1), not an edit.
+#   a3a5e6a64460c2690ff8e2276e49242e0f12f6255bdc6667a92adb31  ██ THE FEE + FLOOR
+#     COHORT, 2026-07-26. ██ This hash moved even though `minting_policy.ak`'s own
+#     logic did not change: `pool_seeded` PINS the genesis datum against
+#     `creator_fee_bps_v3`, `platform_fee_bps_v3`, `platform_fee_flat_v3` and
+#     `pool_floor_v3`, so those constants are compiled into it. Changing the fee
+#     schedule therefore changes the minting policy's bytes as surely as it changes
+#     the pool's — which is the correct behaviour, and the reason a launch built
+#     against the old policy can never satisfy the new one.
+#   f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd  ██ v3.1 — THE
+#     GENESIS BUY, 2026-07-26. ██ A launch may now carry the creator's first buy
+#     in the SAME transaction. Operator decision, after the first real browser
+#     launch: the two-transaction flow produced a second wallet approval that
+#     FAILED (the wallet had not yet seen the launch's change output, so a
+#     partial sign returned an empty witness set), and the approval itself listed
+#     every token and NFT in the wallet because the launch's own change output
+#     was the largest one available to coin selection.
+#
+#     ██ THE POOL HASH DID NOT MOVE, AND THAT IS THE POINT. ██ `lump_pool.ak` is
+#     byte-identical at e81825bb… , so the shared pool address is unchanged and
+#     every v3.0 token already at it — TEST, policy 2f69d32a… , launched hours
+#     before this — keeps trading through exactly the bytes it launched under.
+#     A cohort bump here costs future policy ids, nothing else.
+#
+#     WHAT CHANGED in `pool_seeded`: `ada_reserve == 0` and
+#     `lovelace == pool_floor_v3` were absolute, which made one-transaction
+#     launch-and-buy not merely unimplemented but IMPOSSIBLE — a buy must SPEND
+#     the pool output and no transaction can spend an output it creates. Both are
+#     now pinned to what the output actually holds:
+#         ada_in     = lovelace_of(pool.value) - pool_floor_v3
+#         tokens_out = total_supply_v3 - quantity_of(pool.value, …)
+#     and `genesis_buy_ok` holds a non-zero `ada_in` to `validate_buy`'s own
+#     clauses at the genesis state: `tokens_out == quote_buy(0, virtual_token_v3,
+#     ada_in)` recomputed on chain, `cap_ok`, `ada_in > 0`, and BOTH fee outputs
+#     at the cohort rates. `open_ok` is omitted only because it is statically
+#     true there.
+#
+#     NOTHING IS DERIVED FROM A REDEEMER OR A DATUM FIELD. Both quantities come
+#     from the output's real value, so there is nothing a launcher can misstate —
+#     the same discipline the V-2/R-1 fee work arrived at after deriving fees
+#     from an author-controlled OrderDatum turned out to be the bug.
+#
+#     C-1 IS UNCHANGED IN STRENGTH. "Every token outside the pool was bought on
+#     the curve" still holds: tokens leaving at genesis are bought at the curve's
+#     opening price, at the same quote and the same fees any later buyer pays.
+#     There is no configuration in which routing a first buy through genesis is
+#     cheaper than the separate Buy it replaces, so this is a UX and
+#     front-running change, not an economic one — with two transactions, anyone
+#     watching the mempool could land a buy in between at the opening price.
+#
+#     THE v2 DOUBLE-FDV BUG STAYS CLOSED, and its reject test was rewritten
+#     rather than deleted: seeded ADA that buys nothing is still refused, now
+#     because `quote_buy` owes tokens for it that the output did not give up.
+#     Suite 321 -> 336 checks (+15: one fixture-vs-arithmetic identity test, one
+#     canonical accept, the exact-exhaustion accept, and twelve rejects covering
+#     both quote directions, both datum lies, both fee omissions, both
+#     one-lovelace fee boundaries, free tokens, seeded-ADA-buys-nothing,
+#     closing the curve at genesis, and a pool below the floor).
+minting_policy.lump_mint_v3.mint  f1c0f9d9dfa1396118592a8c5fbd8fdc1b578fce8b241a022685c2fd

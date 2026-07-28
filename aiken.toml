@@ -1,0 +1,9 @@
+name = "lumpfun/cardano-v3"
+version = "0.0.0"
+compiler = "v1.1.17"
+plutus = "v3"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.1.0"
+source = "github"
