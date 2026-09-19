@@ -18,7 +18,12 @@
 # Usage: ./mutverify.sh    (restores the tree from .mutbak on every exit)
 # ══════════════════════════════════════════════════════════════════════════════
 cd "$(dirname "$0")" || exit 1
-AIKEN="$HOME/bin/aiken"
+AIKEN="$(command -v aiken || true)"
+[ -z "$AIKEN" ] && [ -x "$HOME/bin/aiken" ] && AIKEN="$HOME/bin/aiken"
+if [ -z "$AIKEN" ]; then
+  echo "mutverify: aiken not found on PATH" >&2
+  exit 127
+fi
 BAK=".mutbak"
 LOCK=".mutverify.lock"
 
@@ -48,7 +53,11 @@ echo $$ > "$LOCK"
 rm -rf "$BAK"; mkdir -p "$BAK"
 cp -r lib validators "$BAK"/
 restore() { rm -rf lib validators; cp -r "$BAK"/lib "$BAK"/validators .; }
-cleanup() { restore; rm -f "$LOCK"; }
+# Private temp files: a fixed /tmp path is pre-creatable as a symlink by another
+# user on the machine, which would redirect these writes.
+MVLOG="$(mktemp "${TMPDIR:-/tmp}/mutverify.XXXXXXXX")" || exit 1
+MVCLEAN="$(mktemp "${TMPDIR:-/tmp}/mutverify.XXXXXXXX")" || exit 1
+cleanup() { restore; rm -f "$LOCK" "$MVLOG" "$MVCLEAN"; }
 # INT/TERM as well as EXIT: a bare `trap restore EXIT` does not fire on SIGKILL, and
 # a run killed from outside leaves the tree mutated with no warning.
 trap cleanup EXIT INT TERM
@@ -145,13 +154,13 @@ run_case() {
   # deterministic and survives the retry; a filesystem flake does not.
   local attempt=1
   while :; do
-    script -qfec "NO_COLOR=1 $AIKEN check -m '$match'" /tmp/mv.log >/dev/null 2>&1
-    sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' /tmp/mv.log > /tmp/mv.clean
+    script -qfec "NO_COLOR=1 $AIKEN check -m '$match'" "$MVLOG" >/dev/null 2>&1
+    sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$MVLOG" > "$MVCLEAN"
     # Ran tests at all? Then it compiled, whatever else the log says.
-    grep -qE '[0-9]+ tests \|' /tmp/mv.clean && break
+    grep -qE '[0-9]+ tests \|' "$MVCLEAN" && break
     # No tests ran. A `×` diagnostic means compilation stopped; no `×` means the
     # pattern simply matched nothing, which the ntests check below reports.
-    grep -q '×' /tmp/mv.clean || break
+    grep -q '×' "$MVCLEAN" || break
     if [ "$attempt" = "2" ]; then
       echo "  COMPILE-ERROR   $label   (mutation did not compile, twice)"
       fail=$((fail+1)); return
@@ -175,9 +184,9 @@ run_case() {
   # under-reports kills is worse than no harness, because it invites deleting the
   # guard it just failed to credit.
   local nfailed ntests
-  nfailed=$(grep -oE "[0-9]+ failed" /tmp/mv.clean | grep -oE "^[0-9]+" \
+  nfailed=$(grep -oE "[0-9]+ failed" "$MVCLEAN" | grep -oE "^[0-9]+" \
             | awk '{s+=$1} END {print s+0}')
-  ntests=$(grep -oE "[0-9]+ tests" /tmp/mv.clean | grep -oE "^[0-9]+" \
+  ntests=$(grep -oE "[0-9]+ tests" "$MVCLEAN" | grep -oE "^[0-9]+" \
            | awk '{s+=$1} END {print s+0}')
   [ -z "$nfailed" ] && nfailed=0
   [ -z "$ntests" ] && ntests=0

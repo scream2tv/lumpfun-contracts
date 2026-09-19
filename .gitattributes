@@ -1,2 +1,11 @@
 * text=auto
+
+# A verifier must be able to rebuild plutus.json byte-for-byte on any platform,
+# and Aiken writes LF. Pin every file the build reads or produces to LF so a
+# Windows checkout does not introduce a spurious diff.
+*.ak text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
 *.sh text eol=lf
+hashes.expected text eol=lf

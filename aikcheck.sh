@@ -8,6 +8,15 @@
 cd "$(dirname "$0")" || exit 1
 CMD="${1:-check}"
 
+# Resolve aiken from PATH so a clone works for someone who is not the author;
+# a hardcoded ~/bin/aiken only ever existed on one machine.
+AIKEN="$(command -v aiken || true)"
+if [ -z "$AIKEN" ] && [ -x "$HOME/bin/aiken" ]; then AIKEN="$HOME/bin/aiken"; fi
+if [ -z "$AIKEN" ]; then
+  echo "aikcheck: aiken not found on PATH — see https://aiken-lang.org/installation-instructions" >&2
+  exit 127
+fi
+
 # ── The hash gate ─────────────────────────────────────────────────────────────
 # `aiken check` CANNOT assert a script hash: an Aiken test cannot read
 # plutus.json and a validator cannot hash itself. So a stdlib bump, a
@@ -44,14 +53,17 @@ verify_hashes() {
   while read -r title want; do
     case "$title" in ''|\#*) continue ;; esac
     [ -z "$want" ] && continue
-    got=$(python3 -c "
+    # `title` comes out of a data file, so it is passed as an ARGUMENT and never
+    # interpolated into the program text: a crafted hashes.expected must not be
+    # able to run code in whoever verifies this repository.
+    got=$(python3 -c '
 import json,sys
-d=json.load(open('plutus.json'))
-for v in d['validators']:
-    if v['title']=='$title':
-        print(v.get('hash','')); sys.exit(0)
-print('MISSING')
-")
+d=json.load(open("plutus.json"))
+for v in d["validators"]:
+    if v["title"]==sys.argv[1]:
+        print(v.get("hash","")); sys.exit(0)
+print("MISSING")
+' "$title")
     if [ "$got" = "$want" ]; then
       printf '  ok        %-45s %s\n' "$title" "$got"
     else
@@ -71,14 +83,14 @@ print('MISSING')
   # (This replaces the H_fail recompute, deleted with the Splash path on
   # 2026-07-26 — see the note above. The recompute discipline was worth keeping;
   # only its subject changed.)
-  rec=$(python3 -c "
-import json,hashlib
-d=json.load(open('plutus.json'))
-for v in d['validators']:
-    if v['title']=='lump_pool.lump_pool_v3.spend':
-        print(hashlib.blake2b(bytes.fromhex('03')+bytes.fromhex(v['compiledCode']),digest_size=28).hexdigest())
+  rec=$(python3 -c '
+import json,hashlib,sys
+d=json.load(open("plutus.json"))
+for v in d["validators"]:
+    if v["title"]==sys.argv[1]:
+        print(hashlib.blake2b(bytes.fromhex("03")+bytes.fromhex(v["compiledCode"]),digest_size=28).hexdigest())
         break
-")
+' 'lump_pool.lump_pool_v3.spend')
   want_pool=$(awk '$1=="lump_pool.lump_pool_v3.spend"{print $2}' "$expected")
   if [ -n "$rec" ] && [ "$rec" = "$want_pool" ]; then
     echo "  ok        pool hash recomputed from compiledCode (blake2b-224, V3 tag)"
@@ -103,13 +115,24 @@ if [ "$CMD" = "hashes" ]; then
   exit $?
 fi
 
-script -qfec "NO_COLOR=1 $HOME/bin/aiken $CMD" /tmp/aik.log >/dev/null 2>&1
-RC=$?
-sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' /tmp/aik.log > /tmp/aik.clean.log
-if grep -q "Error\|error:" /tmp/aik.clean.log; then
-  cat /tmp/aik.clean.log
+# Private temp files. A fixed /tmp path is something another user on the machine
+# can pre-create as a symlink, which would redirect these writes.
+LOG="$(mktemp "${TMPDIR:-/tmp}/aikcheck.XXXXXXXX")" || exit 1
+CLEAN="$(mktemp "${TMPDIR:-/tmp}/aikcheck.XXXXXXXX")" || exit 1
+trap 'rm -f "$LOG" "$CLEAN"' EXIT
+
+if script -qfec true /dev/null >/dev/null 2>&1; then
+  script -qfec "NO_COLOR=1 $AIKEN $CMD" "$LOG" >/dev/null 2>&1
+  RC=$?
 else
-  grep -E "FAIL|Summary|tests \|" /tmp/aik.clean.log
+  NO_COLOR=1 "$AIKEN" "$CMD" >"$LOG" 2>&1
+  RC=$?
+fi
+sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$LOG" > "$CLEAN"
+if grep -q "Error\|error:" "$CLEAN"; then
+  cat "$CLEAN"
+else
+  grep -E "FAIL|Summary|tests \|" "$CLEAN"
 fi
 
 if [ "$CMD" = "build" ] && [ "$RC" = "0" ]; then
